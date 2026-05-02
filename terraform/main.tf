@@ -28,6 +28,11 @@ data "aws_ssm_parameter" "tunnel2_psk" {
   with_decryption = true
 }
 
+data "aws_ssm_parameter" "windows_password" {
+  name            = "/vpn/home/windows_password"
+  with_decryption = true
+}
+
 # ---------------------------------------------------------
 # 2. VPC 및 기본 네트워크 구성
 # ---------------------------------------------------------
@@ -179,10 +184,9 @@ resource "aws_ssm_activation" "windows_onprem" {
 # ---------------------------------------------------------
 resource "null_resource" "run_ansible" {
   triggers = {
-    # 1. 파일 경로 수정: 상위 폴더의 ansible 디렉토리 참조
     playbook_hash = filesha256("../ansible/setup_windows_vpn.yml")
     tunnel1_ip    = aws_vpn_connection.vpn.tunnel1_address
-    tunnel2_ip    = aws_vpn_connection.vpn.tunnel2_address # ★ 터널 2 트리거 추가
+    tunnel2_ip    = aws_vpn_connection.vpn.tunnel2_address
     ssm_id        = aws_ssm_activation.windows_onprem.id
   }
 
@@ -192,14 +196,27 @@ resource "null_resource" "run_ansible" {
   ]
 
   provisioner "local-exec" {
-    # 2. 실행 경로(working_dir)를 명시적으로 지정하여 명령어를 깔끔하게 유지
     working_dir = "../ansible"
     
-    # ★ 터널 2의 IP와 PSK를 Ansible 변수로 추가 전달
-    command = <<EOT
-      ansible-playbook -i inventory.ini setup_windows_vpn.yml \
-        --extra-vars 'ssm_code="${aws_ssm_activation.windows_onprem.activation_code}" ssm_id="${aws_ssm_activation.windows_onprem.id}" tunnel1_ip="${aws_vpn_connection.vpn.tunnel1_address}" tunnel1_psk="${data.aws_ssm_parameter.tunnel1_psk.value}" tunnel2_ip="${aws_vpn_connection.vpn.tunnel2_address}" tunnel2_psk="${data.aws_ssm_parameter.tunnel2_psk.value}"'
-    EOT
+    environment = {
+      WINRM_PASS    = "windowS!"
+      SSM_CODE      = aws_ssm_activation.windows_onprem.activation_code
+      SSM_ID        = aws_ssm_activation.windows_onprem.id
+      TUNNEL1_IP    = aws_vpn_connection.vpn.tunnel1_address
+      TUNNEL1_PSK   = data.aws_ssm_parameter.tunnel1_psk.value
+      TUNNEL2_IP    = aws_vpn_connection.vpn.tunnel2_address
+      TUNNEL2_PSK   = data.aws_ssm_parameter.tunnel2_psk.value
+      
+      # ★ 신규 추가: Terraform이 계산한 BGP Inside IP를 동적으로 주입
+      # vgw = Virtual Private Gateway (AWS 측 IP)
+      # cgw = Customer Gateway (Windows 서버 측 IP)
+      BGP_PEER1_IP  = aws_vpn_connection.vpn.tunnel1_vgw_inside_address
+      BGP_LOCAL1_IP = aws_vpn_connection.vpn.tunnel1_cgw_inside_address
+      BGP_PEER2_IP  = aws_vpn_connection.vpn.tunnel2_vgw_inside_address
+      BGP_LOCAL2_IP = aws_vpn_connection.vpn.tunnel2_cgw_inside_address
+    }
+
+    command = "ansible-playbook -i inventory.ini setup_windows_vpn.yml"
   }
 }
 
