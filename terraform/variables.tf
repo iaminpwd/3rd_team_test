@@ -26,8 +26,3 @@ variable "onprem_asn" {
   description = "온프레미스(홈 랩)의 BGP ASN"
   type        = number
 }
-
-variable "cgw_ip_address" {
-  description = "온프레미스 공유기의 외부 공인 IP"
-  type        = string
-}

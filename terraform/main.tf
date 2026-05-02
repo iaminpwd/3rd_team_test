@@ -16,7 +16,7 @@ provider "aws" {
 }
 
 # ---------------------------------------------------------
-# 1. 보안 데이터 (SSM Parameter Store)
+# 1. 보안 데이터 및 설정 (SSM Parameter Store)
 # ---------------------------------------------------------
 data "aws_ssm_parameter" "tunnel1_psk" {
   name            = "/vpn/home/tunnel1_psk"
@@ -26,6 +26,11 @@ data "aws_ssm_parameter" "tunnel1_psk" {
 data "aws_ssm_parameter" "tunnel2_psk" {
   name            = "/vpn/home/tunnel2_psk"
   with_decryption = true
+}
+
+# [추가됨] 집 공유기(또는 대상지)의 공인 IP를 SSM에서 동적으로 가져옵니다.
+data "aws_ssm_parameter" "cgw_public_ip" {
+  name = "/vpn/home/cgw_public_ip"
 }
 
 # ---------------------------------------------------------
@@ -81,7 +86,8 @@ resource "aws_route" "aws_to_onprem" {
 
 resource "aws_customer_gateway" "cgw" {
   bgp_asn    = var.onprem_asn
-  ip_address = var.cgw_ip_address 
+  # [수정됨] 하드코딩 변수 대신 SSM Parameter Store 값 사용
+  ip_address = data.aws_ssm_parameter.cgw_public_ip.value 
   type       = "ipsec.1"
   tags = { Name = "CGW-Home-Windows-Server" }
 }
@@ -171,7 +177,25 @@ resource "aws_ssm_activation" "windows_onprem" {
 }
 
 # ---------------------------------------------------------
-# 6. Ansible 실행 자동화 (Triggers 반영)
+# 6. Ansible Inventory 파일 자동 생성 (동적 구성)
+# ---------------------------------------------------------
+resource "local_file" "ansible_inventory" {
+  content  = <<-EOT
+    [windows_server]
+    ${data.aws_ssm_parameter.cgw_public_ip.value} ansible_port=5985
+
+    [windows_server:vars]
+    ansible_user=Administrator
+    ansible_connection=winrm
+    ansible_winrm_server_cert_validation=ignore
+    ansible_python_interpreter=/usr/bin/python3
+    ansible_winrm_transport=basic
+  EOT
+  filename = "../ansible/inventory.ini"
+}
+
+# ---------------------------------------------------------
+# 7. Ansible 실행 자동화 (Triggers 반영)
 # ---------------------------------------------------------
 resource "null_resource" "run_ansible" {
   triggers = {
@@ -183,7 +207,8 @@ resource "null_resource" "run_ansible" {
 
   depends_on = [
     aws_vpn_connection.vpn,
-    aws_ssm_activation.windows_onprem
+    aws_ssm_activation.windows_onprem,
+    local_file.ansible_inventory # [추가됨] 인벤토리 파일이 완전히 생성된 후 Ansible 실행 보장
   ]
 
   provisioner "local-exec" {
@@ -191,19 +216,22 @@ resource "null_resource" "run_ansible" {
     
     # 보안 업데이트: 모든 민감 정보와 동적 IP를 환경 변수로 처리
     environment = {
-      WINRM_PASS    = "windowS!"  # 향후 AWS SSM Parameter Store 연동 권장
-      SSM_CODE      = aws_ssm_activation.windows_onprem.activation_code
-      SSM_ID        = aws_ssm_activation.windows_onprem.id
-      TUNNEL1_IP    = aws_vpn_connection.vpn.tunnel1_address
-      TUNNEL1_PSK   = data.aws_ssm_parameter.tunnel1_psk.value
-      TUNNEL2_IP    = aws_vpn_connection.vpn.tunnel2_address
-      TUNNEL2_PSK   = data.aws_ssm_parameter.tunnel2_psk.value
+      WINRM_PASS      = "windowS!"  # 향후 AWS SSM Parameter Store 연동 권장
+      SSM_CODE        = aws_ssm_activation.windows_onprem.activation_code
+      SSM_ID          = aws_ssm_activation.windows_onprem.id
+      TUNNEL1_IP      = aws_vpn_connection.vpn.tunnel1_address
+      TUNNEL1_PSK     = data.aws_ssm_parameter.tunnel1_psk.value
+      TUNNEL2_IP      = aws_vpn_connection.vpn.tunnel2_address
+      TUNNEL2_PSK     = data.aws_ssm_parameter.tunnel2_psk.value
       
       # Terraform이 계산한 BGP Inside IP 주입
-      BGP_PEER1_IP  = aws_vpn_connection.vpn.tunnel1_vgw_inside_address
-      BGP_LOCAL1_IP = aws_vpn_connection.vpn.tunnel1_cgw_inside_address
-      BGP_PEER2_IP  = aws_vpn_connection.vpn.tunnel2_vgw_inside_address
-      BGP_LOCAL2_IP = aws_vpn_connection.vpn.tunnel2_cgw_inside_address
+      BGP_PEER1_IP    = aws_vpn_connection.vpn.tunnel1_vgw_inside_address
+      BGP_LOCAL1_IP   = aws_vpn_connection.vpn.tunnel1_cgw_inside_address
+      BGP_PEER2_IP    = aws_vpn_connection.vpn.tunnel2_vgw_inside_address
+      BGP_LOCAL2_IP   = aws_vpn_connection.vpn.tunnel2_cgw_inside_address
+      
+      # [추가됨] Windows 내부에서 BGP 라우팅 구성 시 사용할 온프레미스 대역 주입
+      ONPREM_VPC_CIDR = var.onprem_vpc_cidr 
     }
 
     command = "ansible-playbook -i inventory.ini setup_windows_vpn.yml"
@@ -211,7 +239,7 @@ resource "null_resource" "run_ansible" {
 }
 
 # ---------------------------------------------------------
-# 7. Outputs
+# 8. Outputs
 # ---------------------------------------------------------
 output "test_ec2_private_ip" {
   value = aws_instance.test_ec2.private_ip
