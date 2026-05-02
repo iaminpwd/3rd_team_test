@@ -1,0 +1,20 @@
+# 1. Terraform 관련 로컬 캐시 및 바이너리
+.terraform/
+
+# 2. 인프라 상태 파일 (민감 정보 포함 - 절대 업로드 금지)
+*.tfstate
+*.tfstate.*
+
+# 3. 변수 설정 파일 (비밀번호, API 키 등 포함 - 절대 업로드 금지)
+*.tfvars
+*.tfvars.json
+
+# 4. 실행 시 생성되는 임시 파일 및 로그
+crash.log
+*.lock.info
+
+# 5. 로컬 테스트용 오버라이드 파일
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
