@@ -33,6 +33,11 @@ data "aws_ssm_parameter" "cgw_public_ip" {
   name = "/vpn/home/cgw_public_ip"
 }
 
+data "aws_ssm_parameter" "windows_password" {
+  name = "/vpn/home/windows_password"
+}
+
+
 # ---------------------------------------------------------
 # 2. VPC 및 기본 네트워크 구성
 # ---------------------------------------------------------
@@ -216,7 +221,7 @@ resource "null_resource" "run_ansible" {
     
     # 보안 업데이트: 모든 민감 정보와 동적 IP를 환경 변수로 처리
     environment = {
-      WINRM_PASS      = "windowS!"  # 향후 AWS SSM Parameter Store 연동 권장
+      WINRM_PASS      = data.aws_ssm_parameter.windows_password.value 
       SSM_CODE        = aws_ssm_activation.windows_onprem.activation_code
       SSM_ID          = aws_ssm_activation.windows_onprem.id
       TUNNEL1_IP      = aws_vpn_connection.vpn.tunnel1_address
