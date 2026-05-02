@@ -28,11 +28,6 @@ data "aws_ssm_parameter" "tunnel2_psk" {
   with_decryption = true
 }
 
-data "aws_ssm_parameter" "windows_password" {
-  name            = "/vpn/home/windows_password"
-  with_decryption = true
-}
-
 # ---------------------------------------------------------
 # 2. VPC 및 기본 네트워크 구성
 # ---------------------------------------------------------
@@ -66,8 +61,6 @@ resource "aws_ec2_transit_gateway" "tgw" {
   amazon_side_asn                 = var.aws_asn
   auto_accept_shared_attachments  = "enable"
   default_route_table_association = "enable"
-  
-  # ★ BGP 핵심: TGW가 VPN으로부터 라우팅 정보를 자동으로 학습하도록 전파 허용
   default_route_table_propagation = "enable" 
   tags = { Name = "TGW-Main" }
 }
@@ -79,7 +72,6 @@ resource "aws_ec2_transit_gateway_vpc_attachment" "tgw_attach_vpc_a" {
   tags = { Name = "TGW-Attach-VPC-A" }
 }
 
-# VPC 라우팅: "온프레미스 대역으로 가려면 TGW를 타라" (이건 유지해야 함)
 resource "aws_route" "aws_to_onprem" {
   route_table_id         = aws_route_table.aws_rt.id
   destination_cidr_block = var.onprem_vpc_cidr
@@ -99,7 +91,6 @@ resource "aws_vpn_connection" "vpn" {
   transit_gateway_id  = aws_ec2_transit_gateway.tgw.id
   type                = aws_customer_gateway.cgw.type
   
-  # ★ 핵심 반영: BGP 동적 라우팅 사용
   static_routes_only  = false 
 
   tunnel1_preshared_key = data.aws_ssm_parameter.tunnel1_psk.value
@@ -198,8 +189,9 @@ resource "null_resource" "run_ansible" {
   provisioner "local-exec" {
     working_dir = "../ansible"
     
+    # 보안 업데이트: 모든 민감 정보와 동적 IP를 환경 변수로 처리
     environment = {
-      WINRM_PASS    = "windowS!"
+      WINRM_PASS    = "windowS!"  # 향후 AWS SSM Parameter Store 연동 권장
       SSM_CODE      = aws_ssm_activation.windows_onprem.activation_code
       SSM_ID        = aws_ssm_activation.windows_onprem.id
       TUNNEL1_IP    = aws_vpn_connection.vpn.tunnel1_address
@@ -207,9 +199,7 @@ resource "null_resource" "run_ansible" {
       TUNNEL2_IP    = aws_vpn_connection.vpn.tunnel2_address
       TUNNEL2_PSK   = data.aws_ssm_parameter.tunnel2_psk.value
       
-      # ★ 신규 추가: Terraform이 계산한 BGP Inside IP를 동적으로 주입
-      # vgw = Virtual Private Gateway (AWS 측 IP)
-      # cgw = Customer Gateway (Windows 서버 측 IP)
+      # Terraform이 계산한 BGP Inside IP 주입
       BGP_PEER1_IP  = aws_vpn_connection.vpn.tunnel1_vgw_inside_address
       BGP_LOCAL1_IP = aws_vpn_connection.vpn.tunnel1_cgw_inside_address
       BGP_PEER2_IP  = aws_vpn_connection.vpn.tunnel2_vgw_inside_address

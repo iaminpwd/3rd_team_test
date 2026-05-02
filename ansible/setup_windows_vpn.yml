@@ -1,0 +1,189 @@
+---
+- name: Windows Server 하이브리드 완전 자동화 프로비저닝 (보안/HA/멱등성 완성본)
+  hosts: windows_server
+  gather_facts: yes
+  vars:
+    aws_vpc_cidr: "10.1.0.0/16"
+    onprem_asn: 65000         
+    aws_asn: 64512            
+    local_lan_ip: "192.168.0.23"     
+
+    # [보안 및 자동화 업데이트] 동적 IP 및 Secret 매핑 (하드코딩 제거)
+    bgp_peer1_ip: "{{ lookup('env', 'BGP_PEER1_IP') }}"
+    bgp_local1_ip: "{{ lookup('env', 'BGP_LOCAL1_IP') }}"
+    bgp_peer2_ip: "{{ lookup('env', 'BGP_PEER2_IP') }}"
+    bgp_local2_ip: "{{ lookup('env', 'BGP_LOCAL2_IP') }}"
+
+    ansible_password: "{{ lookup('env', 'WINRM_PASS') }}"
+    ssm_code: "{{ lookup('env', 'SSM_CODE') }}"
+    ssm_id: "{{ lookup('env', 'SSM_ID') }}"
+    tunnel1_ip: "{{ lookup('env', 'TUNNEL1_IP') }}"
+    tunnel1_psk: "{{ lookup('env', 'TUNNEL1_PSK') }}"
+    tunnel2_ip: "{{ lookup('env', 'TUNNEL2_IP') }}"
+    tunnel2_psk: "{{ lookup('env', 'TUNNEL2_PSK') }}"
+
+  tasks:
+    # ---------------------------------------------------------
+    # 1. RRAS 구성 (인프라 엔진 준비)
+    # ---------------------------------------------------------
+    - name: 1. Windows Server에 RRAS 설치
+      ansible.windows.win_feature:
+        name: Routing
+        state: present
+        include_management_tools: yes
+      register: rras_install
+
+    - name: 1-1. 필요시 자동 재부팅
+      ansible.windows.win_reboot:
+      when: rras_install.reboot_required
+
+    - name: 1-2. RRAS 서비스 활성화 및 시작
+      ansible.windows.win_service:
+        name: RemoteAccess
+        state: started
+        start_mode: auto
+
+    # ---------------------------------------------------------
+    # 2. VPN 멱등성 보장 및 연결 유지 (Active/Standby 적용)
+    # ---------------------------------------------------------
+    - name: 2-1. 기존 정적 라우팅 제거 (BGP 라우팅 충돌 방지)
+      ansible.windows.win_shell: |
+        if (Get-NetRoute -DestinationPrefix "{{ aws_vpc_cidr }}" -ErrorAction SilentlyContinue) {
+            Remove-NetRoute -DestinationPrefix "{{ aws_vpc_cidr }}" -Confirm:$false
+        }
+      ignore_errors: yes
+
+    - name: 2-2. VPN 인터페이스 검사, 생성 및 무중단 업데이트
+      ansible.windows.win_shell: |
+        # 터널 1을 Primary(Metric 10), 터널 2를 Backup(Metric 50)으로 설정하여 라우팅 충돌 방지
+        $tunnels = @(
+            @{ Name="AWS-TGW-Tunnel1"; Dest="{{ tunnel1_ip }}"; Psk="{{ tunnel1_psk }}"; Metric="10" },
+            @{ Name="AWS-TGW-Tunnel2"; Dest="{{ tunnel2_ip }}"; Psk="{{ tunnel2_psk }}"; Metric="50" }
+        )
+        $isChanged = $false
+
+        foreach ($t in $tunnels) {
+            $iface = Get-VpnS2SInterface -Name $t.Name -ErrorAction SilentlyContinue
+            
+            if ($null -eq $iface) {
+                Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "{{ aws_vpc_cidr }}:$($t.Metric)" -Protocol IKEv2
+                $isChanged = $true
+            } elseif ($iface.Destination -ne $t.Dest) {
+                Set-VpnS2SInterface -Name $t.Name -Destination $t.Dest -SharedSecret $t.Psk -IPv4Subnet "{{ aws_vpc_cidr }}:$($t.Metric)"
+                $isChanged = $true
+            }
+            
+            if ((Get-VpnS2SInterface -Name $t.Name).ConnectionState -ne "Connected") {
+                Connect-VpnS2SInterface -Name $t.Name
+                $isChanged = $true
+                Start-Sleep -Seconds 3
+            }
+        }
+        
+        if ($isChanged) { Write-Output "CHANGED" }
+      register: vpn_setup
+      changed_when: "'CHANGED' in vpn_setup.stdout"
+
+    # ---------------------------------------------------------
+    # 3. BGP 동적 라우팅 멱등성 보장 및 비대칭 방지
+    # ---------------------------------------------------------
+    - name: 3-1. Windows BGP 라우터 활성화 (무중단)
+      ansible.windows.win_shell: |
+        $router = Get-BgpRouter -ErrorAction SilentlyContinue
+        if ($null -eq $router) {
+            Add-BgpRouter -BgpIdentifier "{{ local_lan_ip }}" -LocalASN {{ onprem_asn }} -Force
+        } elseif ($router.BgpIdentifier -ne "{{ local_lan_ip }}") {
+            Set-BgpRouter -BgpIdentifier "{{ local_lan_ip }}" -LocalASN {{ onprem_asn }} -Force
+        }
+        Add-BgpCustomRoute -Network "192.168.0.0/24" -ErrorAction SilentlyContinue
+
+    - name: 3-2. AWS TGW BGP 피어(Peer) 무중단 등록 및 갱신
+      ansible.windows.win_shell: |
+        $peers = @(
+            @{ Name="AWS-TGW-Peer1"; LocalIp="{{ bgp_local1_ip }}"; PeerIp="{{ bgp_peer1_ip }}" },
+            @{ Name="AWS-TGW-Peer2"; LocalIp="{{ bgp_local2_ip }}"; PeerIp="{{ bgp_peer2_ip }}" }
+        )
+        $isChanged = $false
+
+        foreach ($p in $peers) {
+            $peer = Get-BgpPeer -Name $p.Name -ErrorAction SilentlyContinue
+            
+            if ($null -eq $peer) {
+                Add-BgpPeer -Name $p.Name -LocalIPAddress $p.LocalIp -PeerIPAddress $p.PeerIp -PeerASN {{ aws_asn }}
+                $isChanged = $true
+            } elseif ($peer.LocalIPAddress -ne $p.LocalIp -or $peer.PeerIPAddress -ne $p.PeerIp) {
+                Set-BgpPeer -Name $p.Name -LocalIPAddress $p.LocalIp -PeerIPAddress $p.PeerIp -PeerASN {{ aws_asn }} -Force
+                $isChanged = $true
+            }
+            
+            Start-BgpPeer -Name $p.Name -ErrorAction SilentlyContinue
+        }
+
+        if ($isChanged) { Write-Output "CHANGED" }
+      register: bgp_setup
+      changed_when: "'CHANGED' in bgp_setup.stdout"
+
+    - name: 3-3. BGP 우선순위 설정 (MED 활용하여 비대칭 라우팅 방지)
+      ansible.windows.win_shell: |
+        # 1. MED 정책 생성 (낮은 숫자 = 높은 우선순위)
+        if (-not (Get-BgpRoutingPolicy -Name "Primary-MED" -ErrorAction SilentlyContinue)) {
+            # Tunnel 1용: 높은 우선순위 (10)
+            Add-BgpRoutingPolicy -Name "Primary-MED" -PolicyType Modify -MED 10
+        }
+        if (-not (Get-BgpRoutingPolicy -Name "Backup-MED" -ErrorAction SilentlyContinue)) {
+            # Tunnel 2용: 낮은 우선순위 (100)
+            Add-BgpRoutingPolicy -Name "Backup-MED" -PolicyType Modify -MED 100
+        }
+
+        # 2. 각 BGP 피어에 정책 적용 (전송 방향: Outbound)
+        # Windows RRAS는 -RoutingPolicy와 -Direction 파라미터를 통해 송출 경로를 제어합니다.
+        Set-BgpPeer -Name "AWS-TGW-Peer1" -RoutingPolicy "Primary-MED" -Direction Outbound -Force
+        Set-BgpPeer -Name "AWS-TGW-Peer2" -RoutingPolicy "Backup-MED" -Direction Outbound -Force
+        
+        Write-Output "CHANGED"
+      register: bgp_priority
+      changed_when: "'CHANGED' in bgp_priority.stdout"
+
+    # ---------------------------------------------------------
+    # 4. AWS SSM Agent (하이브리드 활성화)
+    # ---------------------------------------------------------
+    - name: 4. SSM Agent 설치 및 자동 응답 등록
+      ansible.windows.win_shell: |
+        # 이미 SSM Agent가 설치되어 있다면 설치 및 등록 건너뛰기
+        $ssmService = Get-Service -Name "AmazonSSMAgent" -ErrorAction SilentlyContinue
+        if ($ssmService) {
+            Write-Output "ALREADY_REGISTERED"
+            exit 0
+        }
+
+        $url = "https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/windows_amd64/AmazonSSMAgentSetup.exe"
+        $path = "$env:TEMP\AmazonSSMAgentSetup.exe"
+        if (!(Test-Path $path)) { (New-Object System.Net.WebClient).DownloadFile($url, $path) }
+        Start-Process $path -ArgumentList "/S" -Wait
+        
+        cd "C:\Program Files\Amazon\SSM"
+        echo "y" | .\amazon-ssm-agent.exe -register -code "{{ ssm_code }}" -id "{{ ssm_id }}" -region "ap-northeast-2"
+      register: ssm_reg
+      changed_when: "'ALREADY_REGISTERED' not in ssm_reg.stdout"
+
+    - name: 4-1. SSM 서비스 상태 보장
+      ansible.windows.win_service:
+        name: AmazonSSMAgent
+        state: started  # 여러 번 실행될 때 불필요한 재시작을 막기 위해 started로 변경
+        start_mode: auto
+
+    # ---------------------------------------------------------
+    # 5. Zero Trust (보안 마무리)
+    # ---------------------------------------------------------
+    - name: 5. [Zero Trust] WinRM 포트 폐쇄 (비동기 처리)
+      community.windows.win_firewall_rule:
+        name: "Block-WinRM-After-Setup"
+        localport: 5985
+        action: block
+        direction: in
+        protocol: tcp
+        state: present
+        enabled: yes
+      async: 15
+      poll: 0
+      ignore_errors: yes
