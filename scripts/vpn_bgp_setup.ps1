@@ -27,10 +27,18 @@ foreach ($svc in $coreServices) {
 }
 
 # 1-3. [중요] 기존에 꼬여있던 라우팅 구성을 완전히 날리고 새로 배포
-Write-Host "RRAS 엔진 재구성 중 (Install-RemoteAccess)..." -ForegroundColor Cyan
-Uninstall-RemoteAccess -Force -ErrorAction SilentlyContinue
-Install-RemoteAccess -VpnType RoutingOnly -ErrorAction SilentlyContinue
+Write-Host "1-3. RRAS 엔진 구성 상태 확인 및 설치..." -ForegroundColor Cyan
 
+# RRAS가 이미 구성되어 있는지 확인하고, 안 되어 있을 때만 설치 (데드락 방지)
+$rrasConfigured = $false
+try {
+    $null = Get-RemoteAccess -ErrorAction Stop
+    $rrasConfigured = $true
+    Write-Host "RRAS 엔진이 이미 구성되어 있습니다. 설치를 건너뜁니다."
+} catch {
+    Write-Host "새로운 RRAS 엔진 구성을 시작합니다 (Install-RemoteAccess)..."
+    Install-RemoteAccess -VpnType RoutingOnly -ErrorAction Stop
+}
 # 1-4. 엔진 시동 및 안정화 대기
 Start-Service RasMan -ErrorAction SilentlyContinue
 Start-Service RemoteAccess -ErrorAction SilentlyContinue
