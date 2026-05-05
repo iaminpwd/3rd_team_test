@@ -15,13 +15,13 @@
 $ErrorActionPreference = "Stop"
 
 Write-Host "0. 필수 Windows 기능(Routing, RemoteAccess) 설치 검증" -ForegroundColor Cyan
-$feature = Get-WindowsFeature -Name RemoteAccess, Routing
-if ($feature.InstallState -contains "Available" -or $feature.InstallState -contains "Removed") {
+$feature = Get-WindowsFeature -Name RemoteAccess, Routing, DirectAccess-VPN -ErrorAction SilentlyContinue
+if ($null -ne $feature -and ($feature.InstallState -contains "Available" -or $feature.InstallState -contains "Removed")) {
     Write-Host "필수 기능이 누락되어 설치를 진행합니다. (수 분 소요 가능)"
-    Install-WindowsFeature -Name RemoteAccess, Routing -IncludeManagementTools -ErrorAction Stop
+    Install-WindowsFeature -Name RemoteAccess, Routing, DirectAccess-VPN -IncludeManagementTools -ErrorAction Stop
     Write-Host "기능 설치 완료."
 } else {
-    Write-Host "필수 기능이 이미 설치되어 있습니다."
+    Write-Host "필수 기능이 이미 설치되어 있거나 확인을 건너뜁니다."
 }
 
 Write-Host "0-1. Windows 방화벽 IPsec/IKEv2 필수 포트 및 프로토콜 개방" -ForegroundColor Cyan
@@ -56,33 +56,31 @@ foreach ($svc in $coreServices) {
 # 1-3. [중요] 기존에 꼬여있던 라우팅 구성을 완전히 날리고 새로 배포
 Write-Host "1-3. RRAS 엔진 구성 상태 확인 및 설치..." -ForegroundColor Cyan
 
-# RRAS가 이미 구성되어 있는지 확인하고, 안 되어 있거나 LAN Routing이 비활성화된 경우 설치
+# RRAS가 이미 구성되어 있는지 확인
 $rrasConfigured = $false
 try {
     $null = Get-RemoteAccess -ErrorAction Stop
     $rrasConfigured = $true
     Write-Host "RRAS 엔진이 이미 구성되어 있습니다."
-    
-    $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
-    $routerType = (Get-ItemProperty -Path $regPath -Name "RouterType" -ErrorAction SilentlyContinue).RouterType
-    if ($routerType -ne 7 -and $routerType -ne 4) {
-        Write-Host "LAN Routing이 활성화되어 있지 않아 기존 구성을 해제합니다..." -ForegroundColor Yellow
-        Uninstall-RemoteAccess -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 5
-        $rrasConfigured = $false
-    } else {
-        Write-Host "LAN Routing이 활성화되어 있어 설치를 건너뜁니다."
-    }
 } catch {
 }
 
 if (-not $rrasConfigured) {
     Write-Host "새로운 RRAS 엔진 구성을 시작합니다 (Install-RemoteAccess)..."
-    Install-RemoteAccess -VpnType RoutingOnly -ErrorAction Stop
+    Install-RemoteAccess -VpnType VpnRouting -ErrorAction Stop
 }
+
+# 명시적으로 RouterType을 7(LAN & WAN)로 강제 설정하여 BGP(Lan Routing) 활성화 보장
+Write-Host "LAN Routing(RouterType=7) 강제 활성화 설정..." -ForegroundColor Cyan
+$regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
+if (Test-Path $regPath) {
+    Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -ErrorAction SilentlyContinue
+}
+
 # 1-4. 엔진 시동 및 안정화 대기
 Start-Service RasMan -ErrorAction SilentlyContinue
 Start-Service RemoteAccess -ErrorAction SilentlyContinue
+Restart-Service RemoteAccess -ErrorAction SilentlyContinue
 
 Write-Host "VPN 엔진 초기화 대기 중... (최대 3분)" -ForegroundColor Cyan
 $retryCount = 0
