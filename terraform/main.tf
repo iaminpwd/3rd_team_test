@@ -191,6 +191,27 @@ resource "aws_ssm_activation" "windows_onprem" {
   depends_on         = [aws_iam_role_policy_attachment.ssm_hybrid_attach]
 }
 
+# =========================================================
+# [여기서부터 추가] 생성된 ID와 Code를 파라미터 스토어에 자동 저장
+# =========================================================
+resource "aws_ssm_parameter" "activation_id" {
+  name        = "/vpn/home/ssm_activation_id"
+  type        = "String"
+  value       = aws_ssm_activation.windows_onprem.id
+  description = "SSM Hybrid Activation ID for On-Prem Windows"
+  
+  # 값 변경 시 기존 파라미터를 덮어쓰도록 허용
+  overwrite   = true 
+}
+
+resource "aws_ssm_parameter" "activation_code" {
+  name        = "/vpn/home/ssm_activation_code"
+  type        = "SecureString"
+  value       = aws_ssm_activation.windows_onprem.activation_code
+  description = "SSM Hybrid Activation Code for On-Prem Windows"
+  
+  overwrite   = true
+}
 
 # ---------------------------------------------------------
 # 6. 파이프라인으로 넘겨줄 Outputs

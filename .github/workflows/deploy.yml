@@ -49,16 +49,6 @@ jobs:
           INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text)
           echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
 
-
-    # [추가] 로봇이 현재 폴더 구조를 출력하도록 명령 (CCTV 역할)
-      - name: 파일 구조 디버깅
-        run: |
-          echo "현재 위치: $(pwd)"
-          echo "루트 폴더 목록:"
-          ls -la
-          echo "scripts 폴더 안의 목록:"
-          ls -la ./scripts/ || echo "scripts 폴더가 아예 없습니다!"
-          
       - name: AWS SSM으로 Windows 설정 스크립트 전송 및 대기
         run: |
           # [수정 3] 파라미터를 스크립트 상단에 변수로 직접 때려넣는 병합 파일 생성
