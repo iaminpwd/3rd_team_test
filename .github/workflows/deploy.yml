@@ -34,75 +34,57 @@ jobs:
           terraform init
           terraform apply -auto-approve
 
-      - name: Terraform Output 추출 및 환경 변수 등록
-        working-directory: ./terraform
+      - name: [통합] 인스턴스 인식 및 설정 스크립트 전송
+        # 작업 디렉토리를 루트로 두고 테라폼 폴더와 스크립트 폴더를 각각 안전하게 참조합니다.
         run: |
-          # 1. 인스턴스가 Online이 될 때까지 최대 10번(200초) 재시도하는 로직
+          # 1. 인스턴스가 Online이 될 때까지 최대 5분(15회) 대기
           echo "AWS SSM에서 Online 상태의 인스턴스를 찾는 중..."
-          MAX_RETRIES=10
-          RETRY_COUNT=0
           INSTANCE_ID="None"
-
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId | [0]" --output text | tr -d '\r\n')
-            
-            if [ "$INSTANCE_ID" != "None" ] && [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "null" ]; then
+          for i in {1..15}; do
+            RAW_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId | [0]" --output text | tr -d '\r\n')
+            if [ "$RAW_ID" != "None" ] && [ -n "$RAW_ID" ] && [ "$RAW_ID" != "null" ]; then
+              INSTANCE_ID=$RAW_ID
               echo "✅ 인스턴스 인식 성공: $INSTANCE_ID"
               break
             fi
-            
-            RETRY_COUNT=$((RETRY_COUNT+1))
-            echo "⏳ 아직 인스턴스가 준비되지 않았습니다. (재시도 $RETRY_COUNT/$MAX_RETRIES)... 20초 후 다시 시도합니다."
+            echo "⏳ 대기 중 ($i/15)... 20초 후 다시 시도합니다."
             sleep 20
           done
 
-          # 2. 최종 확인 후 환경 변수 등록
-          if [ "$INSTANCE_ID" == "None" ] || [ -z "$INSTANCE_ID" ]; then
-            echo "❌ 오류: 200초를 기다렸으나 Online 상태의 노드를 찾지 못했습니다."
+          if [ "$INSTANCE_ID" == "None" ]; then
+            echo "❌ 오류: 5분을 기다렸으나 Online 상태의 노드를 찾지 못했습니다."
             exit 1
           fi
 
-          # 3. 안전한 환경 변수 기록 (줄바꿈 제거 tr -d '\r\n' 필수)
-          {
-            echo "INSTANCE_ID=$INSTANCE_ID"
-            echo "TUNNEL1_IP=$(terraform output -raw vpn_tunnel1_ip | tr -d '\r\n')"
-            echo "TUNNEL1_PSK=$(terraform output -raw vpn_tunnel1_psk | tr -d '\r\n')"
-            echo "BGP_PEER1_IP=$(terraform output -raw vpn_bgp_peer1_ip | tr -d '\r\n')"
-            echo "BGP_LOCAL1_IP=$(terraform output -raw vpn_bgp_local1_ip | tr -d '\r\n')"
-            echo "TUNNEL2_IP=$(terraform output -raw vpn_tunnel2_ip | tr -d '\r\n')"
-            echo "TUNNEL2_PSK=$(terraform output -raw vpn_tunnel2_psk | tr -d '\r\n')"
-            echo "BGP_PEER2_IP=$(terraform output -raw vpn_bgp_peer2_ip | tr -d '\r\n')"
-            echo "BGP_LOCAL2_IP=$(terraform output -raw vpn_bgp_local2_ip | tr -d '\r\n')"
-          } >> $GITHUB_ENV
-      - name: AWS SSM으로 Windows 설정 스크립트 전송 및 대기
-        run: |
+          # 2. 동일한 Bash 세션 안에서 즉시 스크립트 생성 (GITHUB_ENV를 통한 데이터 유실 원천 차단)
+          # terraform 명령어에 -chdir 옵션을 주어 폴더 이동 없이 안전하게 출력값을 가져옵니다.
           cat <<EOF > final_script.ps1
           \$AwsVpcCidr = "10.1.0.0/16"
           \$OnpremVpcCidr = "192.168.0.0/24"
-          \$Tunnel1Ip = "${{ env.TUNNEL1_IP }}"
-          \$Tunnel1Psk = "${{ env.TUNNEL1_PSK }}"
-          \$BgpPeer1Ip = "${{ env.BGP_PEER1_IP }}"
-          \$BgpLocal1Ip = "${{ env.BGP_LOCAL1_IP }}"
-          
-          \$Tunnel2Ip = "${{ env.TUNNEL2_IP }}"
-          \$Tunnel2Psk = "${{ env.TUNNEL2_PSK }}"
-          \$BgpPeer2Ip = "${{ env.BGP_PEER2_IP }}"
-          \$BgpLocal2Ip = "${{ env.BGP_LOCAL2_IP }}"
+          \$Tunnel1Ip = "$(terraform -chdir=./terraform output -raw vpn_tunnel1_ip | tr -d '\r\n')"
+          \$Tunnel1Psk = "$(terraform -chdir=./terraform output -raw vpn_tunnel1_psk | tr -d '\r\n')"
+          \$BgpPeer1Ip = "$(terraform -chdir=./terraform output -raw vpn_bgp_peer1_ip | tr -d '\r\n')"
+          \$BgpLocal1Ip = "$(terraform -chdir=./terraform output -raw vpn_bgp_local1_ip | tr -d '\r\n')"
+          \$Tunnel2Ip = "$(terraform -chdir=./terraform output -raw vpn_tunnel2_ip | tr -d '\r\n')"
+          \$Tunnel2Psk = "$(terraform -chdir=./terraform output -raw vpn_tunnel2_psk | tr -d '\r\n')"
+          \$BgpPeer2Ip = "$(terraform -chdir=./terraform output -raw vpn_bgp_peer2_ip | tr -d '\r\n')"
+          \$BgpLocal2Ip = "$(terraform -chdir=./terraform output -raw vpn_bgp_local2_ip | tr -d '\r\n')"
           EOF
           
+          # scripts 폴더에 있는 원본 ps1 파일 내용을 이어 붙임
           cat ./scripts/vpn_bgp_setup.ps1 >> final_script.ps1
           
+          # Base64 인코딩
           B64_SCRIPT=$(cat final_script.ps1 | base64 -w 0)
-          
           EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
           
+          # 3. InstanceIds 타겟팅 전송 (대소문자 InstanceIds 준수)
           COMMAND_ID=$(aws ssm send-command \
             --document-name "AWS-RunPowerShellScript" \
-            --targets "Key=InstanceIds,Values=${{ env.INSTANCE_ID }}" \
+            --targets "Key=InstanceIds,Values=$INSTANCE_ID" \
             --parameters "commands=[\"$EXEC_CMD\"]" \
             --query "Command.CommandId" \
             --output text)
             
           echo "명령 전송 완료. Command ID: $COMMAND_ID"
-          
-          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "${{ env.INSTANCE_ID }}"
+          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID"
