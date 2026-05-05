@@ -16,21 +16,31 @@ $fwRules = @(
     @{ Name="Allow-IPsec-NATT-UDP4500"; Port="4500"; Protocol="UDP" }
 )
 foreach ($rule in $fwRules) {
-    if (-not (Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue)) {
+    try {
+        $null = Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction Stop
+    } catch {
         New-NetFirewallRule -DisplayName $rule.Name -Direction Inbound -Action Allow -Protocol $rule.Protocol -LocalPort $rule.Port -ErrorAction SilentlyContinue
     }
 }
-if (-not (Get-NetFirewallRule -DisplayName "Allow-IPsec-ESP-Proto50" -ErrorAction SilentlyContinue)) {
+try {
+    $null = Get-NetFirewallRule -DisplayName "Allow-IPsec-ESP-Proto50" -ErrorAction Stop
+} catch {
     New-NetFirewallRule -DisplayName "Allow-IPsec-ESP-Proto50" -Direction Inbound -Action Allow -Protocol 50 -ErrorAction SilentlyContinue
 }
 
 # -----------------------------------------------------------------
-# [핵심] 1. 엔진 무조건 철거 후 재건축 (좀비 상태 원천 차단)
+# [핵심] 1. 엔진 무조건 철거 후 재건축 (Try-Catch 적용)
 # -----------------------------------------------------------------
 Write-Host "1. RRAS 엔진 초기화 및 LAN 라우팅(BGP) 강제 활성화" -ForegroundColor Cyan
 
-Write-Host "기존에 꼬여있는 RRAS 설정을 완전히 날려버립니다..."
-Uninstall-RemoteAccess -Force -ErrorAction SilentlyContinue
+Write-Host "기존 RRAS 설정을 초기화합니다..."
+try {
+    # 지울 게 없어서 나는 에러를 안전하게 무시합니다.
+    Uninstall-RemoteAccess -Force -ErrorAction Stop
+    Write-Host "기존 엔진 철거 완료."
+} catch {
+    Write-Host "👉 지울 이전 설정이 없습니다. (이미 깨끗한 상태입니다)" -ForegroundColor Yellow
+}
 Start-Sleep -Seconds 5
 
 Write-Host "깨끗한 상태에서 RRAS 엔진 재설치 중..."
@@ -41,8 +51,8 @@ $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
 Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force
 
 Write-Host "라우팅 서비스 재시작 및 BGP 모듈 로딩 중... (10초 대기)"
-Restart-Service RasMan -Force -ErrorAction SilentlyContinue
-Restart-Service RemoteAccess -Force -ErrorAction SilentlyContinue
+try { Restart-Service RasMan -Force -ErrorAction Stop } catch {}
+try { Restart-Service RemoteAccess -Force -ErrorAction Stop } catch {}
 Start-Sleep -Seconds 10
 
 # -----------------------------------------------------------------
@@ -54,7 +64,9 @@ $tunnels = @(
     @{ Name="AWS-TGW-Tunnel2"; Dest=$Tunnel2Ip; Psk=$Tunnel2Psk; Metric="50" }
 )
 foreach ($t in $tunnels) {
-    $iface = Get-VpnS2SInterface -Name $t.Name -ErrorAction SilentlyContinue
+    $iface = $null
+    try { $iface = Get-VpnS2SInterface -Name $t.Name -ErrorAction Stop } catch {}
+    
     if ($null -eq $iface) {
         Write-Host "[$($t.Name)] 생성 중..."
         Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)" -Protocol IKEv2
@@ -67,19 +79,31 @@ foreach ($t in $tunnels) {
 Write-Host "3. BGP 라우터 및 Peer 구성" -ForegroundColor Cyan
 $dynamic_lan_ip = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null }).IPv4Address.IPAddress | Select-Object -First 1
 
-# 이제 엔진이 초기화되었으므로 여기서 무조건 성공합니다.
-Add-BgpRouter -BgpIdentifier $dynamic_lan_ip -LocalASN 65000 -Force
+# 라우터 추가 전, 이미 있는지 확인
+$router = $null
+try { $router = Get-BgpRouter -ErrorAction Stop } catch {}
+if ($null -eq $router) {
+    Add-BgpRouter -BgpIdentifier $dynamic_lan_ip -LocalASN 65000 -Force
+}
 
 $peers = @(
     @{ Name="AWS-TGW-Peer1"; Local=$BgpLocal1Ip; Peer=$BgpPeer1Ip },
     @{ Name="AWS-TGW-Peer2"; Local=$BgpLocal2Ip; Peer=$BgpPeer2Ip }
 )
 foreach ($p in $peers) {
-    Add-BgpPeer -Name $p.Name -LocalIPAddress $p.Local -PeerIPAddress $p.Peer -PeerASN 64512 -ErrorAction SilentlyContinue
-    Start-BgpPeer -Name $p.Name -ErrorAction SilentlyContinue
+    $bgpPeer = $null
+    try { $bgpPeer = Get-BgpPeer -Name $p.Name -ErrorAction Stop } catch {}
+    
+    if ($null -eq $bgpPeer) {
+        Add-BgpPeer -Name $p.Name -LocalIPAddress $p.Local -PeerIPAddress $p.Peer -PeerASN 64512
+    }
+    try { Start-BgpPeer -Name $p.Name -ErrorAction Stop } catch {}
 }
 
 Write-Host "4. BGP 경로 광고 및 트래픽 제어" -ForegroundColor Cyan
+try { Get-BgpCustomRoute -ErrorAction Stop | Remove-BgpCustomRoute -Force -ErrorAction Stop } catch { }
+try { Get-BgpRoutingPolicy -ErrorAction Stop | Remove-BgpRoutingPolicy -Force -ErrorAction Stop } catch { }
+
 $ip = $OnpremVpcCidr.Split("/")[0]
 $net1 = "$($ip.Split('.')[0]).$($ip.Split('.')[1]).$($ip.Split('.')[2]).0/25"
 $net2 = "$($ip.Split('.')[0]).$($ip.Split('.')[1]).$($ip.Split('.')[2]).128/25"
