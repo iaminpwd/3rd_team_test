@@ -1,45 +1,46 @@
 $ErrorActionPreference = "Stop"
 
-Write-Host "1. RRAS(Routing) 기능 설치 및 서비스 초기화"
-$rras = Get-WindowsFeature Routing
-if ($rras.InstallState -ne "Installed") {
-    Install-WindowsFeature Routing -IncludeManagementTools
+Write-Host "1. 핵심 누락 기능(VPN 및 라우팅) 완벽 설치"
+# 기존에 라우팅만 깔았던 것이 원인! VPN(DirectAccess-VPN) 기능을 명시적으로 함께 설치합니다.
+$features = @("DirectAccess-VPN", "Routing")
+foreach ($f in $features) {
+    $feature = Get-WindowsFeature $f
+    if ($feature.InstallState -ne "Installed") {
+        Write-Host "[$f] 기능 설치 중..."
+        Install-WindowsFeature $f -IncludeManagementTools
+    }
 }
 
-# 라우팅 전용 모드로 RRAS 초기 구성
+# 라우팅 및 VPN 백엔드 초기 구성
 Install-RemoteAccess -VpnType RoutingOnly -ErrorAction SilentlyContinue
 
-# 서비스 자동 시작 설정 및 강제 실행
+# VPN 핵심 서비스(RasMan)와 라우팅 서비스 자동 시작 등록
 Set-Service RemoteAccess -StartupType Automatic -ErrorAction SilentlyContinue
-if ((Get-Service RemoteAccess).Status -ne 'Running') {
-    Start-Service RemoteAccess
-}
+Set-Service RasMan -StartupType Automatic -ErrorAction SilentlyContinue
 
-# ====================================================================
-# [핵심 수정] RRAS VPN 엔진이 완전히 준비될 때까지 기다리는 폴링(Polling) 로직
-# ====================================================================
-Write-Host "RRAS 내부 VPN 엔진 초기화 대기 중... (최대 60초)"
+Write-Host "RRAS 내부 VPN 엔진 초기화 대기 중... (최대 3분)"
 $retryCount = 0
 $rrasReady = $false
 
-while (-not $rrasReady -and $retryCount -lt 12) {
+while (-not $rrasReady -and $retryCount -lt 36) {
     try {
-        # 엔진이 깨어났는지 확인하기 위해 더미 조회를 날려봅니다.
-        # 에러 없이 통과하면 엔진이 준비된 것입니다.
+        if ((Get-Service RemoteAccess).Status -ne 'Running') { Start-Service RemoteAccess -ErrorAction SilentlyContinue }
+        if ((Get-Service RasMan).Status -ne 'Running') { Start-Service RasMan -ErrorAction SilentlyContinue }
+        
+        # 이제 VPN 기능이 깔렸으므로 정상적으로 조회되어야 합니다.
         $null = Get-VpnS2SInterface -ErrorAction Stop
         $rrasReady = $true
-        Write-Host "✅ RRAS 엔진 준비 완료!"
+        Write-Host "✅ VPN 엔진이 완벽하게 준비되었습니다!"
     } catch {
         $retryCount++
-        Write-Host "엔진 부팅 중... 5초 대기 ($retryCount/12)"
+        Write-Host "엔진 부팅 중... 잠시만 기다려주세요 ($retryCount/36)"
         Start-Sleep -Seconds 5
     }
 }
 
 if (-not $rrasReady) {
-    throw "RRAS 엔진이 시간 내에 초기화되지 않았습니다. 윈도우 서버 재부팅이 필요할 수 있습니다."
+    throw "RRAS 엔진 초기화 실패. 윈도우 서버 재부팅이 필요할 수 있습니다."
 }
-# ====================================================================
 
 
 Write-Host "2. VPN 인터페이스 구성 및 업데이트"
@@ -48,7 +49,6 @@ $tunnels = @(
     @{ Name="AWS-TGW-Tunnel2"; Dest=$Tunnel2Ip; Psk=$Tunnel2Psk; Metric="50" }
 )
 foreach ($t in $tunnels) {
-    # 이제 엔진이 깨어있으므로 에러 없이 안전하게 조회됩니다.
     $iface = Get-VpnS2SInterface -Name $t.Name -ErrorAction SilentlyContinue
     
     if ($null -eq $iface) {
