@@ -14,6 +14,7 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.7.0"
+          terraform_wrapper: false
 
       - name: AWS 자격 증명 설정
         uses: aws-actions/configure-aws-credentials@v4
@@ -21,6 +22,32 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-northeast-2
+
+    # [추가됨] 1번: 윈도우 서버 내부 설정 초기화 (SSM)
+      - name: Windows Server 내부 설정 찌꺼기 초기화 (SSM)
+        run: |
+          # Online 상태인 온프레미스 윈도우 인스턴스 ID 찾기
+          INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text)
+          
+          # 인스턴스가 켜져 있을 때만 청소 스크립트 전송
+          if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+            echo "온프레미스 서버($INSTANCE_ID)를 발견했습니다. 초기화 스크립트를 전송합니다."
+            
+            SCRIPT_CONTENT=$(cat ./scripts/vpn_bgp_cleanup.ps1)
+            SCRIPT_JSON=$(jq -Rs . < ./scripts/vpn_bgp_cleanup.ps1)
+            
+            COMMAND_ID=$(aws ssm send-command \
+              --document-name "AWS-RunPowerShellScript" \
+              --targets "Key=instanceids,Values=$INSTANCE_ID" \
+              --parameters "commands=[$SCRIPT_JSON]" \
+              --query "Command.CommandId" \
+              --output text)
+              
+            echo "명령 전송 완료. Command ID: $COMMAND_ID"
+            aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID"
+          else
+            echo "온라인 상태인 서버를 찾을 수 없어 내부 초기화를 건너뜁니다."
+          fi
 
       - name: Terraform 초기화 및 삭제
         working-directory: ./terraform
