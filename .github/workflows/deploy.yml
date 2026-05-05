@@ -37,26 +37,26 @@ jobs:
       - name: Terraform Output 추출 및 환경 변수 등록
         working-directory: ./terraform
         run: |
-          echo "TUNNEL1_IP=$(terraform output -raw vpn_tunnel1_ip)" >> $GITHUB_ENV
-          echo "TUNNEL1_PSK=$(terraform output -raw vpn_tunnel1_psk)" >> $GITHUB_ENV
-          echo "BGP_PEER1_IP=$(terraform output -raw vpn_bgp_peer1_ip)" >> $GITHUB_ENV
-          echo "BGP_LOCAL1_IP=$(terraform output -raw vpn_bgp_local1_ip)" >> $GITHUB_ENV
-          
-          echo "TUNNEL2_IP=$(terraform output -raw vpn_tunnel2_ip)" >> $GITHUB_ENV
-          echo "TUNNEL2_PSK=$(terraform output -raw vpn_tunnel2_psk)" >> $GITHUB_ENV
-          echo "BGP_PEER2_IP=$(terraform output -raw vpn_bgp_peer2_ip)" >> $GITHUB_ENV
-          echo "BGP_LOCAL2_IP=$(terraform output -raw vpn_bgp_local2_ip)" >> $GITHUB_ENV
-          
-          # [수정됨] 무조건 첫 번째 Online 인스턴스 1개만 가져옵니다.
+          # 1. 인스턴스 ID 검증을 먼저 수행하여 찌꺼기(None)가 파일에 들어가는 것을 원천 차단
           INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId | [0]" --output text)
           
-          # 인스턴스가 없을 경우 예외 처리
           if [ "$INSTANCE_ID" == "None" ] || [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" == "null" ]; then
             echo "❌ 오류: 온라인 상태인 SSM 노드를 찾을 수 없습니다. VM의 전원과 인터넷 연결을 확인하세요."
             exit 1
           fi
           
-          echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
+          # 2. 검증이 끝난 후 환경 변수 파일에 일괄 기록 (문법 오류 방지 블록)
+          {
+            echo "INSTANCE_ID=$INSTANCE_ID"
+            echo "TUNNEL1_IP=$(terraform output -raw vpn_tunnel1_ip)"
+            echo "TUNNEL1_PSK=$(terraform output -raw vpn_tunnel1_psk)"
+            echo "BGP_PEER1_IP=$(terraform output -raw vpn_bgp_peer1_ip)"
+            echo "BGP_LOCAL1_IP=$(terraform output -raw vpn_bgp_local1_ip)"
+            echo "TUNNEL2_IP=$(terraform output -raw vpn_tunnel2_ip)"
+            echo "TUNNEL2_PSK=$(terraform output -raw vpn_tunnel2_psk)"
+            echo "BGP_PEER2_IP=$(terraform output -raw vpn_bgp_peer2_ip)"
+            echo "BGP_LOCAL2_IP=$(terraform output -raw vpn_bgp_local2_ip)"
+          } >> $GITHUB_ENV
 
       - name: AWS SSM으로 Windows 설정 스크립트 전송 및 대기
         run: |
