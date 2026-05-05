@@ -27,10 +27,10 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-northeast-2
 
-      - name: Windows Server 내부 설정 찌꺼기 초기화 (SSM)
+- name: Windows Server 내부 설정 찌꺼기 초기화 (SSM)
         run: |
-          INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId | [0]" --output text | tr -d '\r\n')
-          
+          INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text | grep -oE '(i-|mi-)[a-f0-9]+' | head -n 1)
+
           if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ] && [ "$INSTANCE_ID" != "null" ]; then
             echo "온프레미스 서버($INSTANCE_ID)를 발견했습니다. 초기화 스크립트를 전송합니다."
             

@@ -1,177 +1,4 @@
 
-# FILE: ./.github/workflows/destroy.yml
-name: Infrastructure Destruction
-
-on:
-  workflow_dispatch:
-
-concurrency:
-  group: terraform-deploy
-  cancel-in-progress: false
-
-jobs:
-  terraform-destroy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 코드 체크아웃
-        uses: actions/checkout@v3
-
-      - name: Terraform 설치
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.7.0"
-          terraform_wrapper: false
-
-      - name: AWS 자격 증명 설정
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-northeast-2
-
-      - name: Windows Server 내부 설정 찌꺼기 초기화 (SSM)
-        run: |
-          INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text)
-          
-          if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
-            echo "온프레미스 서버($INSTANCE_ID)를 발견했습니다. 초기화 스크립트를 전송합니다."
-            
-            B64_SCRIPT=$(cat ./scripts/vpn_bgp_cleanup.ps1 | base64 -w 0)
-            EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
-            
-            COMMAND_ID=$(aws ssm send-command \
-              --document-name "AWS-RunPowerShellScript" \
-              --targets "Key=instanceids,Values=$INSTANCE_ID" \
-              --parameters "commands=[\"$EXEC_CMD\"]" \
-              --query "Command.CommandId" \
-              --output text)
-              
-            echo "명령 전송 완료. Command ID: $COMMAND_ID"
-            aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID"
-          else
-            echo "온라인 상태인 서버를 찾을 수 없어 내부 초기화를 건너뜁니다."
-          fi
-
-      - name: Terraform 초기화 및 삭제
-        working-directory: ./terraform
-        run: |
-          terraform init
-          terraform destroy -auto-approve
-# FILE: ./terraform/terraform.tfvars
-aws_region      = "ap-northeast-2"
-aws_vpc_cidr    = "10.1.0.0/16"
-onprem_vpc_cidr = "192.168.0.0/24"
-aws_asn         = 64512
-onprem_asn      = 65000
-# FILE: ./.github/workflows/deploy.yml
-name: Hybrid Cloud DR Provisioning
-
-on:
-  push:
-    branches: [ "main" ]
-
-concurrency:
-  group: terraform-deploy
-  cancel-in-progress: false
-
-jobs:
-  deploy-infra-and-configure:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 코드 체크아웃
-        uses: actions/checkout@v3
-
-      - name: Terraform 설치
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.7.0"
-          terraform_wrapper: false
-
-      - name: AWS 자격 증명 설정
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-northeast-2
-
-      - name: Terraform 초기화 및 배포
-        working-directory: ./terraform
-        run: |
-          terraform init
-          terraform apply -auto-approve
-
-      - name: Terraform Output 추출 및 환경 변수 등록
-        working-directory: ./terraform
-        run: |
-          # 1. 인스턴스가 Online이 될 때까지 최대 10번(200초) 재시도하는 로직
-          echo "AWS SSM에서 Online 상태의 인스턴스를 찾는 중..."
-          MAX_RETRIES=10
-          RETRY_COUNT=0
-          INSTANCE_ID="None"
-
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId | [0]" --output text | tr -d '\r\n')
-            
-            if [ "$INSTANCE_ID" != "None" ] && [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "null" ]; then
-              echo "✅ 인스턴스 인식 성공: $INSTANCE_ID"
-              break
-            fi
-            
-            RETRY_COUNT=$((RETRY_COUNT+1))
-            echo "⏳ 아직 인스턴스가 준비되지 않았습니다. (재시도 $RETRY_COUNT/$MAX_RETRIES)... 20초 후 다시 시도합니다."
-            sleep 20
-          done
-
-          # 2. 최종 확인 후 환경 변수 등록
-          if [ "$INSTANCE_ID" == "None" ] || [ -z "$INSTANCE_ID" ]; then
-            echo "❌ 오류: 200초를 기다렸으나 Online 상태의 노드를 찾지 못했습니다."
-            exit 1
-          fi
-
-          # 3. 안전한 환경 변수 기록 (줄바꿈 제거 tr -d '\r\n' 필수)
-          {
-            echo "INSTANCE_ID=$INSTANCE_ID"
-            echo "TUNNEL1_IP=$(terraform output -raw vpn_tunnel1_ip | tr -d '\r\n')"
-            echo "TUNNEL1_PSK=$(terraform output -raw vpn_tunnel1_psk | tr -d '\r\n')"
-            echo "BGP_PEER1_IP=$(terraform output -raw vpn_bgp_peer1_ip | tr -d '\r\n')"
-            echo "BGP_LOCAL1_IP=$(terraform output -raw vpn_bgp_local1_ip | tr -d '\r\n')"
-            echo "TUNNEL2_IP=$(terraform output -raw vpn_tunnel2_ip | tr -d '\r\n')"
-            echo "TUNNEL2_PSK=$(terraform output -raw vpn_tunnel2_psk | tr -d '\r\n')"
-            echo "BGP_PEER2_IP=$(terraform output -raw vpn_bgp_peer2_ip | tr -d '\r\n')"
-            echo "BGP_LOCAL2_IP=$(terraform output -raw vpn_bgp_local2_ip | tr -d '\r\n')"
-          } >> $GITHUB_ENV
-      - name: AWS SSM으로 Windows 설정 스크립트 전송 및 대기
-        run: |
-          cat <<EOF > final_script.ps1
-          \$AwsVpcCidr = "10.1.0.0/16"
-          \$OnpremVpcCidr = "192.168.0.0/24"
-          \$Tunnel1Ip = "${{ env.TUNNEL1_IP }}"
-          \$Tunnel1Psk = "${{ env.TUNNEL1_PSK }}"
-          \$BgpPeer1Ip = "${{ env.BGP_PEER1_IP }}"
-          \$BgpLocal1Ip = "${{ env.BGP_LOCAL1_IP }}"
-          
-          \$Tunnel2Ip = "${{ env.TUNNEL2_IP }}"
-          \$Tunnel2Psk = "${{ env.TUNNEL2_PSK }}"
-          \$BgpPeer2Ip = "${{ env.BGP_PEER2_IP }}"
-          \$BgpLocal2Ip = "${{ env.BGP_LOCAL2_IP }}"
-          EOF
-          
-          cat ./scripts/vpn_bgp_setup.ps1 >> final_script.ps1
-          
-          B64_SCRIPT=$(cat final_script.ps1 | base64 -w 0)
-          
-          EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
-          
-          COMMAND_ID=$(aws ssm send-command \
-            --document-name "AWS-RunPowerShellScript" \
-            --targets "Key=instanceids,Values=${{ env.INSTANCE_ID }}" \
-            --parameters "commands=[\"$EXEC_CMD\"]" \
-            --query "Command.CommandId" \
-            --output text)
-            
-          echo "명령 전송 완료. Command ID: $COMMAND_ID"
-          
-          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "${{ env.INSTANCE_ID }}"
 # FILE: ./terraform/main.tf
 terraform {
   required_providers {
@@ -280,10 +107,12 @@ resource "aws_vpn_connection" "vpn" {
   static_routes_only  = false 
 
   tunnel1_preshared_key = data.aws_ssm_parameter.tunnel1_psk.value
-  tunnel1_inside_cidr   = "169.254.127.124/30"
+  # [변경] 윈도우 OS의 APIPA(169.254) 차단 정책을 피하기 위해 사설 대역 지정
+  tunnel1_inside_cidr   = "169.254.254.124/30" 
   
   tunnel2_preshared_key = data.aws_ssm_parameter.tunnel2_psk.value
-  tunnel2_inside_cidr   = "169.254.177.40/30"
+  # [변경] 윈도우 OS의 APIPA(169.254) 차단 정책을 피하기 위해 사설 대역 지정
+  tunnel2_inside_cidr   = "169.254.254.128/30"
 
   tags = { Name = "VPN-TGW-to-Home" }
 }
@@ -420,6 +249,304 @@ output "vpn_bgp_peer2_ip" {
 output "vpn_bgp_local2_ip" {
   value = aws_vpn_connection.vpn.tunnel2_cgw_inside_address
 }
+# FILE: ./scripts/vpn_bgp_cleanup.ps1
+# scripts/vpn_bgp_cleanup.ps1
+Write-Host "1. BGP 정책 및 라우팅 설정 초기화"
+Get-BgpRoutingPolicy -ErrorAction SilentlyContinue | Remove-BgpRoutingPolicy -Force -ErrorAction SilentlyContinue
+Get-BgpCustomRoute -ErrorAction SilentlyContinue | Remove-BgpCustomRoute -Force -ErrorAction SilentlyContinue
+
+Write-Host "2. BGP 피어(Peer) 및 라우터 제거"
+$peers = @("AWS-TGW-Peer1", "AWS-TGW-Peer2")
+foreach ($p in $peers) {
+    Remove-BgpPeer -Name $p -Force -ErrorAction SilentlyContinue
+}
+Remove-BgpRouter -Force -ErrorAction SilentlyContinue
+
+Write-Host "3. VPN Site-to-Site 인터페이스 제거"
+$tunnels = @("AWS-TGW-Tunnel1", "AWS-TGW-Tunnel2")
+foreach ($t in $tunnels) {
+    Remove-VpnS2SInterface -Name $t -Force -ErrorAction SilentlyContinue
+}
+Write-Host "4. 라우팅 서비스 재시작하여 초기화 상태 반영"
+Restart-Service RemoteAccess -ErrorAction SilentlyContinue
+
+# ===== [추가된 핵심 부분] =====
+Write-Host "5. RRAS 엔진 구성 완전 초기화 (현업 표준 선언적 초기화)"
+Uninstall-RemoteAccess -Force -ErrorAction SilentlyContinue
+# ==============================
+
+Write-Host "✅ 윈도우 서버 내부의 하이브리드 클라우드(VPN/BGP) 설정이 모두 초기화되었습니다."
+# FILE: ./terraform/terraform.tfvars
+aws_region      = "ap-northeast-2"
+aws_vpc_cidr    = "10.1.0.0/16"
+onprem_vpc_cidr = "192.168.0.0/24"
+aws_asn         = 64512
+onprem_asn      = 65000
+# FILE: ./scripts/vpn_bgp_setup.ps1
+# =================================================================
+# scripts/vpn_bgp_setup.ps1
+# =================================================================
+$ErrorActionPreference = "Stop"
+
+Write-Host "0. 필수 Windows 기능(Routing, RemoteAccess) 설치 검증" -ForegroundColor Cyan
+$feature = Get-WindowsFeature -Name RemoteAccess, Routing, DirectAccess-VPN -ErrorAction SilentlyContinue
+if ($null -ne $feature -and ($feature.InstallState -contains "Available" -or $feature.InstallState -contains "Removed")) {
+    Write-Host "필수 기능이 누락되어 설치를 진행합니다. (수 분 소요 가능)"
+    Install-WindowsFeature -Name RemoteAccess, Routing, DirectAccess-VPN -IncludeManagementTools -ErrorAction Stop
+}
+
+Write-Host "0-1. Windows 방화벽 IPsec/IKEv2 필수 포트 개방" -ForegroundColor Cyan
+$fwRules = @(
+    @{ Name="Allow-IPsec-IKE-UDP500"; Port="500"; Protocol="UDP" },
+    @{ Name="Allow-IPsec-NATT-UDP4500"; Port="4500"; Protocol="UDP" }
+)
+foreach ($rule in $fwRules) {
+    try {
+        $null = Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction Stop
+    } catch {
+        New-NetFirewallRule -DisplayName $rule.Name -Direction Inbound -Action Allow -Protocol $rule.Protocol -LocalPort $rule.Port -ErrorAction SilentlyContinue
+    }
+}
+try {
+    $null = Get-NetFirewallRule -DisplayName "Allow-IPsec-ESP-Proto50" -ErrorAction Stop
+} catch {
+    New-NetFirewallRule -DisplayName "Allow-IPsec-ESP-Proto50" -Direction Inbound -Action Allow -Protocol 50 -ErrorAction SilentlyContinue
+}
+
+# -----------------------------------------------------------------
+# [핵심] 1. 엔진 무조건 철거 후 재건축 (Try-Catch 적용)
+# -----------------------------------------------------------------
+Write-Host "1. RRAS 엔진 초기화 및 LAN 라우팅(BGP) 강제 활성화" -ForegroundColor Cyan
+
+Write-Host "기존 RRAS 설정을 초기화합니다..."
+try {
+    # 지울 게 없어서 나는 에러를 안전하게 무시합니다.
+    Uninstall-RemoteAccess -Force -ErrorAction Stop
+    Write-Host "기존 엔진 철거 완료."
+} catch {
+    Write-Host "👉 지울 이전 설정이 없습니다. (이미 깨끗한 상태입니다)" -ForegroundColor Yellow
+}
+Start-Sleep -Seconds 5
+
+Write-Host "깨끗한 상태에서 RRAS 엔진 재설치 중..."
+Install-RemoteAccess -VpnType VpnS2S -ErrorAction Stop
+
+Write-Host "BGP 모듈을 깨우기 위해 LAN Routing(RouterType=7) 강제 세팅..."
+$regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
+Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force
+
+Write-Host "라우팅 서비스 재시작 및 BGP 모듈 로딩 중... (10초 대기)"
+try { Restart-Service RasMan -Force -ErrorAction Stop } catch {}
+try { Restart-Service RemoteAccess -Force -ErrorAction Stop } catch {}
+Start-Sleep -Seconds 10
+
+# -----------------------------------------------------------------
+# 2. VPN 인터페이스 및 BGP 구성
+# -----------------------------------------------------------------
+Write-Host "2. VPN 인터페이스 구성" -ForegroundColor Cyan
+$tunnels = @(
+    @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; Metric="10" },
+    @{ Name="AWS-TGW-Tunnel2"; Dest=$Tunnel2Ip; Psk=$Tunnel2Psk; Metric="50" }
+)
+foreach ($t in $tunnels) {
+    $iface = $null
+    try { $iface = Get-VpnS2SInterface -Name $t.Name -ErrorAction Stop } catch {}
+    
+    if ($null -eq $iface) {
+        Write-Host "[$($t.Name)] 생성 중..."
+        Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)" -Protocol IKEv2
+    } else {
+        Write-Host "[$($t.Name)] 업데이트 중..."
+        Set-VpnS2SInterface -Name $t.Name -Destination $t.Dest -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)"
+    }
+}
+
+Write-Host "3. BGP 라우터 및 Peer 구성" -ForegroundColor Cyan
+$dynamic_lan_ip = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null }).IPv4Address.IPAddress | Select-Object -First 1
+
+# 라우터 추가 전, 이미 있는지 확인
+$router = $null
+try { $router = Get-BgpRouter -ErrorAction Stop } catch {}
+if ($null -eq $router) {
+    Add-BgpRouter -BgpIdentifier $dynamic_lan_ip -LocalASN 65000 -Force
+}
+
+$peers = @(
+    @{ Name="AWS-TGW-Peer1"; Local=$BgpLocal1Ip; Peer=$BgpPeer1Ip },
+    @{ Name="AWS-TGW-Peer2"; Local=$BgpLocal2Ip; Peer=$BgpPeer2Ip }
+)
+foreach ($p in $peers) {
+    $bgpPeer = $null
+    try { $bgpPeer = Get-BgpPeer -Name $p.Name -ErrorAction Stop } catch {}
+    
+    if ($null -eq $bgpPeer) {
+        Add-BgpPeer -Name $p.Name -LocalIPAddress $p.Local -PeerIPAddress $p.Peer -PeerASN 64512
+    }
+    try { Start-BgpPeer -Name $p.Name -ErrorAction Stop } catch {}
+}
+
+Write-Host "4. BGP 경로 광고 및 트래픽 제어" -ForegroundColor Cyan
+try { Get-BgpCustomRoute -ErrorAction Stop | Remove-BgpCustomRoute -Force -ErrorAction Stop } catch { }
+try { Get-BgpRoutingPolicy -ErrorAction Stop | Remove-BgpRoutingPolicy -Force -ErrorAction Stop } catch { }
+
+$ip = $OnpremVpcCidr.Split("/")[0]
+$net1 = "$($ip.Split('.')[0]).$($ip.Split('.')[1]).$($ip.Split('.')[2]).0/25"
+$net2 = "$($ip.Split('.')[0]).$($ip.Split('.')[1]).$($ip.Split('.')[2]).128/25"
+
+Add-BgpCustomRoute -Network $net1, $net2 -ErrorAction SilentlyContinue
+Add-BgpRoutingPolicy -Name "DenySplitOnTunnel2" -PolicyType Deny -MatchPrefix $net1, $net2 -ErrorAction SilentlyContinue
+Set-BgpRoutingPolicyForPeer -PeerName "AWS-TGW-Peer2" -PolicyName "DenySplitOnTunnel2" -Direction Egress -Force
+
+Write-Host "✅ 하이브리드 인프라 구성이 완벽하게 완료되었습니다!" -ForegroundColor Green
+# FILE: ./.github/workflows/deploy.yml
+name: Hybrid Cloud DR Provisioning
+
+on:
+  push:
+    branches: [ "main" ]
+
+concurrency:
+  group: terraform-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy-infra-and-configure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v3
+
+      - name: Terraform 설치
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+          terraform_wrapper: false
+
+      - name: AWS 자격 증명 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      - name: Terraform 초기화 및 배포
+        working-directory: ./terraform
+        run: |
+          terraform init
+          terraform apply -auto-approve
+
+      - name: "[통합] 인스턴스 인식 및 설정 스크립트 전송"
+        run: |
+          # 1. 인스턴스가 Online이 될 때까지 최대 5분(15회) 대기
+          echo "AWS SSM에서 Online 상태의 인스턴스를 찾는 중..."
+          INSTANCE_ID=""
+          
+          for i in {1..15}; do
+            # [수정됨 핵심 로직] AWS CLI의 페이징 None 버그를 원천 차단하기 위해 grep 정규식 사용
+            RAW_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text | grep -o 'mi-[0-9a-f]*' | head -n 1)
+            
+            # RAW_ID에 값이 제대로 담겼을 때만 통과
+            if [ -n "$RAW_ID" ]; then
+              INSTANCE_ID=$RAW_ID
+              echo "✅ 인스턴스 인식 성공: $INSTANCE_ID"
+              break
+            fi
+            echo "⏳ 대기 중 ($i/15)... 20초 후 다시 시도합니다."
+            sleep 20
+          done
+
+          if [ -z "$INSTANCE_ID" ]; then
+            echo "❌ 오류: 5분을 기다렸으나 Online 상태의 노드를 찾지 못했습니다."
+            exit 1
+          fi
+
+          # 2. 동일한 Bash 세션 안에서 즉시 스크립트 생성
+          cat <<EOF > final_script.ps1
+          \$AwsVpcCidr = "10.1.0.0/16"
+          \$OnpremVpcCidr = "192.168.0.0/24"
+          \$Tunnel1Ip = "$(terraform -chdir=./terraform output -raw vpn_tunnel1_ip | tr -d '\r\n')"
+          \$Tunnel1Psk = "$(terraform -chdir=./terraform output -raw vpn_tunnel1_psk | tr -d '\r\n')"
+          \$BgpPeer1Ip = "$(terraform -chdir=./terraform output -raw vpn_bgp_peer1_ip | tr -d '\r\n')"
+          \$BgpLocal1Ip = "$(terraform -chdir=./terraform output -raw vpn_bgp_local1_ip | tr -d '\r\n')"
+          \$Tunnel2Ip = "$(terraform -chdir=./terraform output -raw vpn_tunnel2_ip | tr -d '\r\n')"
+          \$Tunnel2Psk = "$(terraform -chdir=./terraform output -raw vpn_tunnel2_psk | tr -d '\r\n')"
+          \$BgpPeer2Ip = "$(terraform -chdir=./terraform output -raw vpn_bgp_peer2_ip | tr -d '\r\n')"
+          \$BgpLocal2Ip = "$(terraform -chdir=./terraform output -raw vpn_bgp_local2_ip | tr -d '\r\n')"
+          EOF
+          
+          cat ./scripts/vpn_bgp_setup.ps1 >> final_script.ps1
+          
+          B64_SCRIPT=$(cat final_script.ps1 | base64 -w 0)
+          EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
+          
+          # 3. InstanceIds 타겟팅 전송
+          COMMAND_ID=$(aws ssm send-command \
+            --document-name "AWS-RunPowerShellScript" \
+            --targets "Key=InstanceIds,Values=$INSTANCE_ID" \
+            --parameters "commands=[\"$EXEC_CMD\"]" \
+            --query "Command.CommandId" \
+            --output text)
+            
+          echo "명령 전송 완료. Command ID: $COMMAND_ID"
+          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID"
+# FILE: ./.github/workflows/destroy.yml
+name: Infrastructure Destruction
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: terraform-deploy
+  cancel-in-progress: false
+
+jobs:
+  terraform-destroy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v3
+
+      - name: Terraform 설치
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+          terraform_wrapper: false
+
+      - name: AWS 자격 증명 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      - name: Windows Server 내부 설정 찌꺼기 초기화 (SSM)
+        run: |
+          INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId | [0]" --output text | tr -d '\r\n')
+          
+          if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ] && [ "$INSTANCE_ID" != "null" ]; then
+            echo "온프레미스 서버($INSTANCE_ID)를 발견했습니다. 초기화 스크립트를 전송합니다."
+            
+            B64_SCRIPT=$(cat ./scripts/vpn_bgp_cleanup.ps1 | base64 -w 0)
+            EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
+            
+            COMMAND_ID=$(aws ssm send-command \
+              --document-name "AWS-RunPowerShellScript" \
+              --targets "Key=InstanceIds,Values=$INSTANCE_ID" \
+              --parameters "commands=[\"$EXEC_CMD\"]" \
+              --query "Command.CommandId" \
+              --output text)
+              
+            echo "명령 전송 완료. Command ID: $COMMAND_ID"
+            aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID"
+          else
+            echo "온라인 상태인 서버를 찾을 수 없어 내부 초기화를 건너뜁니다."
+          fi
+
+      - name: Terraform 초기화 및 삭제
+        working-directory: ./terraform
+        run: |
+          terraform init
+          terraform destroy -auto-approve
 # FILE: ./terraform/variables.tf
 variable "aws_region" {
   description = "AWS 리전"
@@ -445,30 +572,4 @@ variable "aws_asn" {
 variable "onprem_asn" {
   description = "온프레미스(홈 랩)의 BGP ASN"
   type        = number
-}
-# FILE: ./terraform/.terraform.lock.hcl
-# This file is maintained automatically by "terraform init".
-# Manual edits may be lost in future updates.
-
-provider "registry.terraform.io/hashicorp/aws" {
-  version     = "5.100.0"
-  constraints = "~> 5.0"
-  hashes = [
-    "h1:edXOJWE4ORX8Fm+dpVpICzMZJat4AX0VRCAy/xkcOc0=",
-    "zh:054b8dd49f0549c9a7cc27d159e45327b7b65cf404da5e5a20da154b90b8a644",
-    "zh:0b97bf8d5e03d15d83cc40b0530a1f84b459354939ba6f135a0086c20ebbe6b2",
-    "zh:1589a2266af699cbd5d80737a0fe02e54ec9cf2ca54e7e00ac51c7359056f274",
-    "zh:6330766f1d85f01ae6ea90d1b214b8b74cc8c1badc4696b165b36ddd4cc15f7b",
-    "zh:7c8c2e30d8e55291b86fcb64bdf6c25489d538688545eb48fd74ad622e5d3862",
-    "zh:99b1003bd9bd32ee323544da897148f46a527f622dc3971af63ea3e251596342",
-    "zh:9b12af85486a96aedd8d7984b0ff811a4b42e3d88dad1a3fb4c0b580d04fa425",
-    "zh:9f8b909d3ec50ade83c8062290378b1ec553edef6a447c56dadc01a99f4eaa93",
-    "zh:aaef921ff9aabaf8b1869a86d692ebd24fbd4e12c21205034bb679b9caf883a2",
-    "zh:ac882313207aba00dd5a76dbd572a0ddc818bb9cbf5c9d61b28fe30efaec951e",
-    "zh:bb64e8aff37becab373a1a0cc1080990785304141af42ed6aa3dd4913b000421",
-    "zh:dfe495f6621df5540d9c92ad40b8067376350b005c637ea6efac5dc15028add4",
-    "zh:f0ddf0eaf052766cfe09dea8200a946519f653c384ab4336e2a4a64fdd6310e9",
-    "zh:f1b7e684f4c7ae1eed272b6de7d2049bb87a0275cb04dbb7cda6636f600699c9",
-    "zh:ff461571e3f233699bf690db319dfe46aec75e58726636a0d97dd9ac6e32fb70",
-  ]
 }
