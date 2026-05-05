@@ -56,13 +56,16 @@ try { Restart-Service RemoteAccess -Force -ErrorAction Stop } catch {}
 Start-Sleep -Seconds 10
 
 # -----------------------------------------------------------------
-# 2. VPN 인터페이스 및 BGP 구성
+# 2. VPN 인터페이스 구성 (BGP Local IP 강제 주입 로직 통합)
 # -----------------------------------------------------------------
-Write-Host "2. VPN 인터페이스 구성" -ForegroundColor Cyan
+Write-Host "2. VPN 인터페이스 구성 및 BGP IP 강제 할당" -ForegroundColor Cyan
+
+# 각 터널별로 Local IP 정보를 배열에 추가합니다.
 $tunnels = @(
-    @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; Metric="10" },
-    @{ Name="AWS-TGW-Tunnel2"; Dest=$Tunnel2Ip; Psk=$Tunnel2Psk; Metric="50" }
+    @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; Metric="10"; LocalIP=$BgpLocal1Ip },
+    @{ Name="AWS-TGW-Tunnel2"; Dest=$Tunnel2Ip; Psk=$Tunnel2Psk; Metric="50"; LocalIP=$BgpLocal2Ip }
 )
+
 foreach ($t in $tunnels) {
     $iface = $null
     try { $iface = Get-VpnS2SInterface -Name $t.Name -ErrorAction Stop } catch {}
@@ -74,6 +77,10 @@ foreach ($t in $tunnels) {
         Write-Host "[$($t.Name)] 업데이트 중..."
         Set-VpnS2SInterface -Name $t.Name -Destination $t.Dest -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)"
     }
+
+    # [핵심 수정 부분] 윈도우의 랜덤 APIPA 할당을 방지하기 위해 BGP Local IP를 강제로 인터페이스에 부여합니다.
+    Write-Host "[$($t.Name)] BGP Local IP($($t.LocalIP)) 강제 바인딩 중..." -ForegroundColor Yellow
+    New-NetIPAddress -InterfaceAlias $t.Name -IPAddress $t.LocalIP -PrefixLength 30 -AddressFamily IPv4 -ErrorAction SilentlyContinue
 }
 
 Write-Host "3. BGP 라우터 및 Peer 구성" -ForegroundColor Cyan
