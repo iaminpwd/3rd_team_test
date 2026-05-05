@@ -1,16 +1,16 @@
 # scripts/vpn_bgp_setup.ps1 
-param (
-    [Parameter(Mandatory=$true)][string]$Tunnel1Ip,
-    [Parameter(Mandatory=$true)][string]$Tunnel1Psk,
-    [Parameter(Mandatory=$true)][string]$Tunnel2Ip,
-    [Parameter(Mandatory=$true)][string]$Tunnel2Psk,
-    [Parameter(Mandatory=$true)][string]$AwsVpcCidr,
-    [Parameter(Mandatory=$true)][string]$BgpLocal1Ip,
-    [Parameter(Mandatory=$true)][string]$BgpPeer1Ip,
-    [Parameter(Mandatory=$true)][string]$BgpLocal2Ip,
-    [Parameter(Mandatory=$true)][string]$BgpPeer2Ip,
-    [Parameter(Mandatory=$true)][string]$OnpremVpcCidr
-)
+# AWS SSM Run Command 등에서 실행 시 param() 블록이 최상단에 오지 않으면 오류가 발생합니다.
+# 아래 변수들에 직접 값을 할당하거나 파이프라인(envsubst, sed 등)에서 치환되도록 설정하세요.
+$Tunnel1Ip     = "터널1_IP입력"
+$Tunnel1Psk    = "터널1_PSK입력"
+$Tunnel2Ip     = "터널2_IP입력"
+$Tunnel2Psk    = "터널2_PSK입력"
+$AwsVpcCidr    = "AWS_VPC_CIDR입력"
+$BgpLocal1Ip   = "169.254.x.x"
+$BgpPeer1Ip    = "169.254.x.y"
+$BgpLocal2Ip   = "169.254.x.x"
+$BgpPeer2Ip    = "169.254.x.y"
+$OnpremVpcCidr = "온프레미스_VPC_CIDR입력"
 
 $ErrorActionPreference = "Stop"
 
@@ -112,7 +112,8 @@ foreach ($t in $tunnels) {
 
 Write-Host "3. BGP 라우터 및 Peer 구성" -ForegroundColor Cyan
 $dynamic_lan_ip = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null }).IPv4Address.IPAddress | Select-Object -First 1
-$router = Get-BgpRouter -ErrorAction SilentlyContinue
+$router = $null
+try { $router = Get-BgpRouter -ErrorAction Stop } catch { }
 if ($null -eq $router) {
     Add-BgpRouter -BgpIdentifier $dynamic_lan_ip -LocalASN 65000 -Force
 }
@@ -122,7 +123,8 @@ $peers = @(
     @{ Name="AWS-TGW-Peer2"; Local=$BgpLocal2Ip; Peer=$BgpPeer2Ip }
 )
 foreach ($p in $peers) {
-    $bgpPeer = Get-BgpPeer -Name $p.Name -ErrorAction SilentlyContinue
+    $bgpPeer = $null
+    try { $bgpPeer = Get-BgpPeer -Name $p.Name -ErrorAction Stop } catch { }
     if ($null -eq $bgpPeer) {
         Add-BgpPeer -Name $p.Name -LocalIPAddress $p.Local -PeerIPAddress $p.Peer -PeerASN 64512
     }
@@ -130,8 +132,8 @@ foreach ($p in $peers) {
 }
 
 Write-Host "4. BGP 경로 광고 및 트래픽 제어" -ForegroundColor Cyan
-Get-BgpCustomRoute -ErrorAction SilentlyContinue | Remove-BgpCustomRoute -Force -ErrorAction SilentlyContinue
-Get-BgpRoutingPolicy -ErrorAction SilentlyContinue | Remove-BgpRoutingPolicy -Force -ErrorAction SilentlyContinue
+try { Get-BgpCustomRoute -ErrorAction Stop | Remove-BgpCustomRoute -Force -ErrorAction Stop } catch { }
+try { Get-BgpRoutingPolicy -ErrorAction Stop | Remove-BgpRoutingPolicy -Force -ErrorAction Stop } catch { }
 
 $ip = $OnpremVpcCidr.Split("/")[0]
 $net1 = "$($ip.Split('.')[0]).$($ip.Split('.')[1]).$($ip.Split('.')[2]).0/25"
