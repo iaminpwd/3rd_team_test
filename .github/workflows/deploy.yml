@@ -37,30 +37,43 @@ jobs:
       - name: Terraform Output 추출 및 환경 변수 등록
         working-directory: ./terraform
         run: |
-          # 1. 상태(Online) 대기 시간을 무시하고, 온프레미스 노드(mi-*) ID 강제 추출
-          RAW_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?starts_with(InstanceId, 'mi-')].InstanceId | [0]" --output text)
-          
-          # 2. AWS CLI 특유의 눈에 보이지 않는 줄바꿈(\r\n) 완벽 제거 (오류의 핵심 원인 해결)
-          INSTANCE_ID=$(echo "$RAW_ID" | tr -d '\r\n')
-          
-          if [ "$INSTANCE_ID" == "None" ] || [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" == "null" ]; then
-            echo "❌ 오류: 온프레미스 SSM 노드를 찾을 수 없습니다."
+          # 1. 인스턴스가 Online이 될 때까지 최대 10번(200초) 재시도하는 로직
+          echo "AWS SSM에서 Online 상태의 인스턴스를 찾는 중..."
+          MAX_RETRIES=10
+          RETRY_COUNT=0
+          INSTANCE_ID="None"
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId | [0]" --output text | tr -d '\r\n')
+            
+            if [ "$INSTANCE_ID" != "None" ] && [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "null" ]; then
+              echo "✅ 인스턴스 인식 성공: $INSTANCE_ID"
+              break
+            fi
+            
+            RETRY_COUNT=$((RETRY_COUNT+1))
+            echo "⏳ 아직 인스턴스가 준비되지 않았습니다. (재시도 $RETRY_COUNT/$MAX_RETRIES)... 20초 후 다시 시도합니다."
+            sleep 20
+          done
+
+          # 2. 최종 확인 후 환경 변수 등록
+          if [ "$INSTANCE_ID" == "None" ] || [ -z "$INSTANCE_ID" ]; then
+            echo "❌ 오류: 200초를 기다렸으나 Online 상태의 노드를 찾지 못했습니다."
             exit 1
           fi
-          
-          echo "✅ 타겟 인스턴스 인식 성공: $INSTANCE_ID"
-          
-          # 3. 모든 테라폼 출력값에서도 줄바꿈 문자를 제거하여 GITHUB_ENV 포맷 파괴 원천 차단
-          echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
-          echo "TUNNEL1_IP=$(terraform output -raw vpn_tunnel1_ip | tr -d '\r\n')" >> $GITHUB_ENV
-          echo "TUNNEL1_PSK=$(terraform output -raw vpn_tunnel1_psk | tr -d '\r\n')" >> $GITHUB_ENV
-          echo "BGP_PEER1_IP=$(terraform output -raw vpn_bgp_peer1_ip | tr -d '\r\n')" >> $GITHUB_ENV
-          echo "BGP_LOCAL1_IP=$(terraform output -raw vpn_bgp_local1_ip | tr -d '\r\n')" >> $GITHUB_ENV
-          echo "TUNNEL2_IP=$(terraform output -raw vpn_tunnel2_ip | tr -d '\r\n')" >> $GITHUB_ENV
-          echo "TUNNEL2_PSK=$(terraform output -raw vpn_tunnel2_psk | tr -d '\r\n')" >> $GITHUB_ENV
-          echo "BGP_PEER2_IP=$(terraform output -raw vpn_bgp_peer2_ip | tr -d '\r\n')" >> $GITHUB_ENV
-          echo "BGP_LOCAL2_IP=$(terraform output -raw vpn_bgp_local2_ip | tr -d '\r\n')" >> $GITHUB_ENV
 
+          # 3. 안전한 환경 변수 기록 (줄바꿈 제거 tr -d '\r\n' 필수)
+          {
+            echo "INSTANCE_ID=$INSTANCE_ID"
+            echo "TUNNEL1_IP=$(terraform output -raw vpn_tunnel1_ip | tr -d '\r\n')"
+            echo "TUNNEL1_PSK=$(terraform output -raw vpn_tunnel1_psk | tr -d '\r\n')"
+            echo "BGP_PEER1_IP=$(terraform output -raw vpn_bgp_peer1_ip | tr -d '\r\n')"
+            echo "BGP_LOCAL1_IP=$(terraform output -raw vpn_bgp_local1_ip | tr -d '\r\n')"
+            echo "TUNNEL2_IP=$(terraform output -raw vpn_tunnel2_ip | tr -d '\r\n')"
+            echo "TUNNEL2_PSK=$(terraform output -raw vpn_tunnel2_psk | tr -d '\r\n')"
+            echo "BGP_PEER2_IP=$(terraform output -raw vpn_bgp_peer2_ip | tr -d '\r\n')"
+            echo "BGP_LOCAL2_IP=$(terraform output -raw vpn_bgp_local2_ip | tr -d '\r\n')"
+          } >> $GITHUB_ENV
       - name: AWS SSM으로 Windows 설정 스크립트 전송 및 대기
         run: |
           cat <<EOF > final_script.ps1
@@ -85,7 +98,7 @@ jobs:
           
           COMMAND_ID=$(aws ssm send-command \
             --document-name "AWS-RunPowerShellScript" \
-            --targets "Key=instanceids,Values=${{ env.INSTANCE_ID }}" \
+            --targets "Key=InstanceIds,Values=${{ env.INSTANCE_ID }}" \
             --parameters "commands=[\"$EXEC_CMD\"]" \
             --query "Command.CommandId" \
             --output text)

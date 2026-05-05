@@ -29,9 +29,9 @@ jobs:
 
       - name: Windows Server 내부 설정 찌꺼기 초기화 (SSM)
         run: |
-          INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text)
+          INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId | [0]" --output text | tr -d '\r\n')
           
-          if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+          if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ] && [ "$INSTANCE_ID" != "null" ]; then
             echo "온프레미스 서버($INSTANCE_ID)를 발견했습니다. 초기화 스크립트를 전송합니다."
             
             B64_SCRIPT=$(cat ./scripts/vpn_bgp_cleanup.ps1 | base64 -w 0)
@@ -39,7 +39,7 @@ jobs:
             
             COMMAND_ID=$(aws ssm send-command \
               --document-name "AWS-RunPowerShellScript" \
-              --targets "Key=instanceids,Values=$INSTANCE_ID" \
+              --targets "Key=InstanceIds,Values=$INSTANCE_ID" \
               --parameters "commands=[\"$EXEC_CMD\"]" \
               --query "Command.CommandId" \
               --output text)

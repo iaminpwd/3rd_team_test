@@ -1,30 +1,4 @@
 
-# FILE: ./terraform/variables.tf
-variable "aws_region" {
-  description = "AWS 리전"
-  type        = string
-  default     = "ap-northeast-2"
-}
-
-variable "aws_vpc_cidr" {
-  description = "AWS VPC의 CIDR 대역"
-  type        = string
-}
-
-variable "onprem_vpc_cidr" {
-  description = "온프레미스(홈 랩)의 CIDR 대역"
-  type        = string
-}
-
-variable "aws_asn" {
-  description = "AWS Transit Gateway의 BGP ASN"
-  type        = number
-}
-
-variable "onprem_asn" {
-  description = "온프레미스(홈 랩)의 BGP ASN"
-  type        = number
-}
 # FILE: ./.github/workflows/destroy.yml
 name: Infrastructure Destruction
 
@@ -83,6 +57,121 @@ jobs:
         run: |
           terraform init
           terraform destroy -auto-approve
+# FILE: ./terraform/terraform.tfvars
+aws_region      = "ap-northeast-2"
+aws_vpc_cidr    = "10.1.0.0/16"
+onprem_vpc_cidr = "192.168.0.0/24"
+aws_asn         = 64512
+onprem_asn      = 65000
+# FILE: ./.github/workflows/deploy.yml
+name: Hybrid Cloud DR Provisioning
+
+on:
+  push:
+    branches: [ "main" ]
+
+concurrency:
+  group: terraform-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy-infra-and-configure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v3
+
+      - name: Terraform 설치
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+          terraform_wrapper: false
+
+      - name: AWS 자격 증명 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      - name: Terraform 초기화 및 배포
+        working-directory: ./terraform
+        run: |
+          terraform init
+          terraform apply -auto-approve
+
+      - name: Terraform Output 추출 및 환경 변수 등록
+        working-directory: ./terraform
+        run: |
+          # 1. 인스턴스가 Online이 될 때까지 최대 10번(200초) 재시도하는 로직
+          echo "AWS SSM에서 Online 상태의 인스턴스를 찾는 중..."
+          MAX_RETRIES=10
+          RETRY_COUNT=0
+          INSTANCE_ID="None"
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId | [0]" --output text | tr -d '\r\n')
+            
+            if [ "$INSTANCE_ID" != "None" ] && [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "null" ]; then
+              echo "✅ 인스턴스 인식 성공: $INSTANCE_ID"
+              break
+            fi
+            
+            RETRY_COUNT=$((RETRY_COUNT+1))
+            echo "⏳ 아직 인스턴스가 준비되지 않았습니다. (재시도 $RETRY_COUNT/$MAX_RETRIES)... 20초 후 다시 시도합니다."
+            sleep 20
+          done
+
+          # 2. 최종 확인 후 환경 변수 등록
+          if [ "$INSTANCE_ID" == "None" ] || [ -z "$INSTANCE_ID" ]; then
+            echo "❌ 오류: 200초를 기다렸으나 Online 상태의 노드를 찾지 못했습니다."
+            exit 1
+          fi
+
+          # 3. 안전한 환경 변수 기록 (줄바꿈 제거 tr -d '\r\n' 필수)
+          {
+            echo "INSTANCE_ID=$INSTANCE_ID"
+            echo "TUNNEL1_IP=$(terraform output -raw vpn_tunnel1_ip | tr -d '\r\n')"
+            echo "TUNNEL1_PSK=$(terraform output -raw vpn_tunnel1_psk | tr -d '\r\n')"
+            echo "BGP_PEER1_IP=$(terraform output -raw vpn_bgp_peer1_ip | tr -d '\r\n')"
+            echo "BGP_LOCAL1_IP=$(terraform output -raw vpn_bgp_local1_ip | tr -d '\r\n')"
+            echo "TUNNEL2_IP=$(terraform output -raw vpn_tunnel2_ip | tr -d '\r\n')"
+            echo "TUNNEL2_PSK=$(terraform output -raw vpn_tunnel2_psk | tr -d '\r\n')"
+            echo "BGP_PEER2_IP=$(terraform output -raw vpn_bgp_peer2_ip | tr -d '\r\n')"
+            echo "BGP_LOCAL2_IP=$(terraform output -raw vpn_bgp_local2_ip | tr -d '\r\n')"
+          } >> $GITHUB_ENV
+      - name: AWS SSM으로 Windows 설정 스크립트 전송 및 대기
+        run: |
+          cat <<EOF > final_script.ps1
+          \$AwsVpcCidr = "10.1.0.0/16"
+          \$OnpremVpcCidr = "192.168.0.0/24"
+          \$Tunnel1Ip = "${{ env.TUNNEL1_IP }}"
+          \$Tunnel1Psk = "${{ env.TUNNEL1_PSK }}"
+          \$BgpPeer1Ip = "${{ env.BGP_PEER1_IP }}"
+          \$BgpLocal1Ip = "${{ env.BGP_LOCAL1_IP }}"
+          
+          \$Tunnel2Ip = "${{ env.TUNNEL2_IP }}"
+          \$Tunnel2Psk = "${{ env.TUNNEL2_PSK }}"
+          \$BgpPeer2Ip = "${{ env.BGP_PEER2_IP }}"
+          \$BgpLocal2Ip = "${{ env.BGP_LOCAL2_IP }}"
+          EOF
+          
+          cat ./scripts/vpn_bgp_setup.ps1 >> final_script.ps1
+          
+          B64_SCRIPT=$(cat final_script.ps1 | base64 -w 0)
+          
+          EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
+          
+          COMMAND_ID=$(aws ssm send-command \
+            --document-name "AWS-RunPowerShellScript" \
+            --targets "Key=instanceids,Values=${{ env.INSTANCE_ID }}" \
+            --parameters "commands=[\"$EXEC_CMD\"]" \
+            --query "Command.CommandId" \
+            --output text)
+            
+          echo "명령 전송 완료. Command ID: $COMMAND_ID"
+          
+          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "${{ env.INSTANCE_ID }}"
 # FILE: ./terraform/main.tf
 terraform {
   required_providers {
@@ -331,6 +420,32 @@ output "vpn_bgp_peer2_ip" {
 output "vpn_bgp_local2_ip" {
   value = aws_vpn_connection.vpn.tunnel2_cgw_inside_address
 }
+# FILE: ./terraform/variables.tf
+variable "aws_region" {
+  description = "AWS 리전"
+  type        = string
+  default     = "ap-northeast-2"
+}
+
+variable "aws_vpc_cidr" {
+  description = "AWS VPC의 CIDR 대역"
+  type        = string
+}
+
+variable "onprem_vpc_cidr" {
+  description = "온프레미스(홈 랩)의 CIDR 대역"
+  type        = string
+}
+
+variable "aws_asn" {
+  description = "AWS Transit Gateway의 BGP ASN"
+  type        = number
+}
+
+variable "onprem_asn" {
+  description = "온프레미스(홈 랩)의 BGP ASN"
+  type        = number
+}
 # FILE: ./terraform/.terraform.lock.hcl
 # This file is maintained automatically by "terraform init".
 # Manual edits may be lost in future updates.
@@ -357,95 +472,3 @@ provider "registry.terraform.io/hashicorp/aws" {
     "zh:ff461571e3f233699bf690db319dfe46aec75e58726636a0d97dd9ac6e32fb70",
   ]
 }
-
-# FILE: ./.github/workflows/deploy.yml
-name: Hybrid Cloud DR Provisioning
-
-on:
-  push:
-    branches: [ "main" ]
-
-concurrency:
-  group: terraform-deploy
-  cancel-in-progress: false
-
-jobs:
-  deploy-infra-and-configure:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 코드 체크아웃
-        uses: actions/checkout@v3
-
-      - name: Terraform 설치
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.7.0"
-          terraform_wrapper: false
-
-      - name: AWS 자격 증명 설정
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-northeast-2
-
-      - name: Terraform 초기화 및 배포
-        working-directory: ./terraform
-        run: |
-          terraform init
-          terraform apply -auto-approve
-
-      - name: Terraform Output 추출 및 환경 변수 등록
-        working-directory: ./terraform
-        run: |
-          echo "TUNNEL1_IP=$(terraform output -raw vpn_tunnel1_ip)" >> $GITHUB_ENV
-          echo "TUNNEL1_PSK=$(terraform output -raw vpn_tunnel1_psk)" >> $GITHUB_ENV
-          echo "BGP_PEER1_IP=$(terraform output -raw vpn_bgp_peer1_ip)" >> $GITHUB_ENV
-          echo "BGP_LOCAL1_IP=$(terraform output -raw vpn_bgp_local1_ip)" >> $GITHUB_ENV
-          
-          echo "TUNNEL2_IP=$(terraform output -raw vpn_tunnel2_ip)" >> $GITHUB_ENV
-          echo "TUNNEL2_PSK=$(terraform output -raw vpn_tunnel2_psk)" >> $GITHUB_ENV
-          echo "BGP_PEER2_IP=$(terraform output -raw vpn_bgp_peer2_ip)" >> $GITHUB_ENV
-          echo "BGP_LOCAL2_IP=$(terraform output -raw vpn_bgp_local2_ip)" >> $GITHUB_ENV
-          
-          INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text)
-          echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
-
-      - name: AWS SSM으로 Windows 설정 스크립트 전송 및 대기
-        run: |
-          cat <<EOF > final_script.ps1
-          \$AwsVpcCidr = "10.1.0.0/16"
-          \$OnpremVpcCidr = "192.168.0.0/24"
-          \$Tunnel1Ip = "${{ env.TUNNEL1_IP }}"
-          \$Tunnel1Psk = "${{ env.TUNNEL1_PSK }}"
-          \$BgpPeer1Ip = "${{ env.BGP_PEER1_IP }}"
-          \$BgpLocal1Ip = "${{ env.BGP_LOCAL1_IP }}"
-          
-          \$Tunnel2Ip = "${{ env.TUNNEL2_IP }}"
-          \$Tunnel2Psk = "${{ env.TUNNEL2_PSK }}"
-          \$BgpPeer2Ip = "${{ env.BGP_PEER2_IP }}"
-          \$BgpLocal2Ip = "${{ env.BGP_LOCAL2_IP }}"
-          EOF
-          
-          cat ./scripts/vpn_bgp_setup.ps1 >> final_script.ps1
-          
-          B64_SCRIPT=$(cat final_script.ps1 | base64 -w 0)
-          
-          EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
-          
-          COMMAND_ID=$(aws ssm send-command \
-            --document-name "AWS-RunPowerShellScript" \
-            --targets "Key=instanceids,Values=${{ env.INSTANCE_ID }}" \
-            --parameters "commands=[\"$EXEC_CMD\"]" \
-            --query "Command.CommandId" \
-            --output text)
-            
-          echo "명령 전송 완료. Command ID: $COMMAND_ID"
-          
-          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "${{ env.INSTANCE_ID }}"
-# FILE: ./terraform/terraform.tfvars
-aws_region      = "ap-northeast-2"
-aws_vpc_cidr    = "10.1.0.0/16"
-onprem_vpc_cidr = "192.168.0.0/24"
-aws_asn         = 64512
-onprem_asn      = 65000

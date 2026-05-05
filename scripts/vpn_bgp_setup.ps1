@@ -59,24 +59,30 @@ try {
     $null = Get-RemoteAccess -ErrorAction Stop
     $rrasConfigured = $true
     Write-Host "RRAS 엔진이 이미 구성되어 있습니다."
-} catch {
-}
+} catch {}
 
 if (-not $rrasConfigured) {
     Write-Host "새로운 RRAS 엔진 구성을 시작합니다 (Install-RemoteAccess)..."
     Install-RemoteAccess -VpnType VpnRouting -ErrorAction Stop
+}
+
+# [수정된 핵심 로직] 설치 여부와 상관없이, 매 배포마다 LAN 라우팅 활성화 상태를 검증합니다. (멱등성 보장)
+Write-Host "LAN Routing(RouterType=7) 필수 활성화 상태 검증..." -ForegroundColor Cyan
+$regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
+if (Test-Path $regPath) {
+    $currentRouterType = (Get-ItemProperty -Path $regPath -Name "RouterType" -ErrorAction SilentlyContinue).RouterType
     
-    # [복구된 핵심 로직] Windows Server에서 BGP(Lan Routing)를 켜려면 이 레지스트리가 필수입니다.
-    Write-Host "LAN Routing(RouterType=7) 필수 활성화 설정..." -ForegroundColor Cyan
-    $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
-    if (Test-Path $regPath) {
+    if ($currentRouterType -ne 7) {
+        Write-Host "RouterType이 7이 아닙니다. LAN 라우팅(BGP)을 위해 레지스트리를 7로 강제 수정합니다." -ForegroundColor Yellow
         Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -ErrorAction SilentlyContinue
+        
+        # 레지스트리 수정 후에는 무조건 서비스를 재시작해야 모듈이 로드됩니다.
+        Write-Host "라우팅 서비스 재시작 및 BGP 모듈 로드 중..."
+        Restart-Service RemoteAccess -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 5
+    } else {
+        Write-Host "RouterType이 이미 정상적으로 7로 설정되어 있습니다." -ForegroundColor Green
     }
-    
-    # 레지스트리 적용을 위해 BGP 설정 전 라우팅 서비스를 한 번 재시작해야 모듈이 올라옵니다.
-    Write-Host "라우팅 서비스 재시작 및 BGP 모듈 로드 중..."
-    Restart-Service RemoteAccess -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 5
 }
 
 # 1-4. 엔진 시동 및 안정화 대기
