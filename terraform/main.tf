@@ -14,7 +14,7 @@ terraform {
 
   # [추가] 리모트 백엔드 설정: 상태 파일을 S3에 저장합니다.
   backend "s3" {
-    bucket         = "my-terraform-state-bucket" # 만든 버킷 이름
+    bucket         = "my-terraform-state-bucket-skdmal2213" # 만든 버킷 이름
     key            = "dr-project/terraform.tfstate"
     region         = "ap-northeast-2"
     encrypt        = true
