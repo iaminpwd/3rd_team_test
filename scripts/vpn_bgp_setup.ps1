@@ -1,16 +1,16 @@
 # scripts/vpn_bgp_setup.ps1 
 # AWS SSM Run Command 등에서 실행 시 param() 블록이 최상단에 오지 않으면 오류가 발생합니다.
 # 아래 변수들에 직접 값을 할당하거나 파이프라인(envsubst, sed 등)에서 치환되도록 설정하세요.
-$Tunnel1Ip     = "터널1_IP입력"
-$Tunnel1Psk    = "터널1_PSK입력"
-$Tunnel2Ip     = "터널2_IP입력"
-$Tunnel2Psk    = "터널2_PSK입력"
-$AwsVpcCidr    = "AWS_VPC_CIDR입력"
-$BgpLocal1Ip   = "169.254.x.x"
-$BgpPeer1Ip    = "169.254.x.y"
-$BgpLocal2Ip   = "169.254.x.x"
-$BgpPeer2Ip    = "169.254.x.y"
-$OnpremVpcCidr = "온프레미스_VPC_CIDR입력"
+# $Tunnel1Ip     = "터널1_IP입력"
+# $Tunnel1Psk    = "터널1_PSK입력"
+# $Tunnel2Ip     = "터널2_IP입력"
+# $Tunnel2Psk    = "터널2_PSK입력"
+# $AwsVpcCidr    = "AWS_VPC_CIDR입력"
+# $BgpLocal1Ip   = "169.254.x.x"
+# $BgpPeer1Ip    = "169.254.x.y"
+# $BgpLocal2Ip   = "169.254.x.x"
+# $BgpPeer2Ip    = "169.254.x.y"
+# $OnpremVpcCidr = "온프레미스_VPC_CIDR입력"
 
 $ErrorActionPreference = "Stop"
 
