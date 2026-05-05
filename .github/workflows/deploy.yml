@@ -4,6 +4,10 @@ on:
   push:
     branches: [ "main" ]
 
+concurrency:
+  group: terraform-deploy
+  cancel-in-progress: false
+
 jobs:
   deploy-infra-and-configure:
     runs-on: ubuntu-latest
@@ -14,11 +18,9 @@ jobs:
       - name: Terraform 설치
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.7.0" # 프로젝트에서 사용하는 버전으로 맞추세요.
-          terraform_wrapper: false   # CLI 출력을 그대로 쓰기 위해 false 권장
-        
+          terraform_version: "1.7.0"
+          terraform_wrapper: false
 
-      # [수정 1] AWS 인증 추가 (GitHub Secrets에 미리 등록해둬야 합니다)
       - name: AWS 자격 증명 설정
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -45,15 +47,14 @@ jobs:
           echo "BGP_PEER2_IP=$(terraform output -raw vpn_bgp_peer2_ip)" >> $GITHUB_ENV
           echo "BGP_LOCAL2_IP=$(terraform output -raw vpn_bgp_local2_ip)" >> $GITHUB_ENV
           
-          # Online 상태인 온프레미스 윈도우 인스턴스 ID 찾기
           INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text)
           echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
 
       - name: AWS SSM으로 Windows 설정 스크립트 전송 및 대기
         run: |
-          # [수정 3] 파라미터를 스크립트 상단에 변수로 직접 때려넣는 병합 파일 생성
           cat <<EOF > final_script.ps1
           \$AwsVpcCidr = "10.1.0.0/16"
+          \$OnpremVpcCidr = "192.168.0.0/24"
           \$Tunnel1Ip = "${{ env.TUNNEL1_IP }}"
           \$Tunnel1Psk = "${{ env.TUNNEL1_PSK }}"
           \$BgpPeer1Ip = "${{ env.BGP_PEER1_IP }}"
@@ -65,21 +66,19 @@ jobs:
           \$BgpLocal2Ip = "${{ env.BGP_LOCAL2_IP }}"
           EOF
           
-          # 만들어진 변수들 밑에 실제 동작 스크립트 본문 이어붙이기
           cat ./scripts/vpn_bgp_setup.ps1 >> final_script.ps1
           
-          # 따옴표나 특수문자로 인해 JSON 문법이 깨지는 것을 막기 위해 jq로 안전하게 인코딩
-          SCRIPT_JSON=$(jq -Rs . < final_script.ps1)
+          B64_SCRIPT=$(cat final_script.ps1 | base64 -w 0)
           
-          # 대상 서버로 명령 전송
+          EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
+          
           COMMAND_ID=$(aws ssm send-command \
             --document-name "AWS-RunPowerShellScript" \
             --targets "Key=instanceids,Values=${{ env.INSTANCE_ID }}" \
-            --parameters "commands=[$SCRIPT_JSON]" \
+            --parameters "commands=[\"$EXEC_CMD\"]" \
             --query "Command.CommandId" \
             --output text)
             
           echo "명령 전송 완료. Command ID: $COMMAND_ID"
           
-          # 타겟 서버에서 실행이 끝날 때까지 대기
           aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "${{ env.INSTANCE_ID }}"

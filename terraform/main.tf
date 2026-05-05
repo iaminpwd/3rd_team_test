@@ -1,9 +1,3 @@
-# ---------------------------------------------------------
-# main.tf
-# ---------------------------------------------------------
-
-# terraform/main.tf
-
 terraform {
   required_providers {
     aws = {
@@ -12,9 +6,8 @@ terraform {
     }
   }
 
-  # [추가] 리모트 백엔드 설정: 상태 파일을 S3에 저장합니다.
   backend "s3" {
-    bucket         = "my-terraform-state-bucket-skdmal2213" # 만든 버킷 이름
+    bucket         = "my-terraform-state-bucket-skdmal2213"
     key            = "dr-project/terraform.tfstate"
     region         = "ap-northeast-2"
     encrypt        = true
@@ -38,7 +31,6 @@ data "aws_ssm_parameter" "tunnel2_psk" {
   with_decryption = true
 }
 
-# [추가됨] 집 공유기(또는 대상지)의 공인 IP를 SSM에서 동적으로 가져옵니다.
 data "aws_ssm_parameter" "cgw_public_ip" {
   name = "/vpn/home/cgw_public_ip"
 }
@@ -46,7 +38,6 @@ data "aws_ssm_parameter" "cgw_public_ip" {
 data "aws_ssm_parameter" "windows_password" {
   name = "/vpn/home/windows_password"
 }
-
 
 # ---------------------------------------------------------
 # 2. VPC 및 기본 네트워크 구성
@@ -101,7 +92,6 @@ resource "aws_route" "aws_to_onprem" {
 
 resource "aws_customer_gateway" "cgw" {
   bgp_asn    = var.onprem_asn
-  # [수정됨] 하드코딩 변수 대신 SSM Parameter Store 값 사용
   ip_address = data.aws_ssm_parameter.cgw_public_ip.value 
   type       = "ipsec.1"
   tags = { Name = "CGW-Home-Windows-Server" }
@@ -192,15 +182,13 @@ resource "aws_ssm_activation" "windows_onprem" {
 }
 
 # =========================================================
-# [여기서부터 추가] 생성된 ID와 Code를 파라미터 스토어에 자동 저장
+# 생성된 ID와 Code를 파라미터 스토어에 자동 저장
 # =========================================================
 resource "aws_ssm_parameter" "activation_id" {
   name        = "/vpn/home/ssm_activation_id"
   type        = "String"
   value       = aws_ssm_activation.windows_onprem.id
   description = "SSM Hybrid Activation ID for On-Prem Windows"
-  
-  # 값 변경 시 기존 파라미터를 덮어쓰도록 허용
   overwrite   = true 
 }
 
@@ -209,7 +197,6 @@ resource "aws_ssm_parameter" "activation_code" {
   type        = "SecureString"
   value       = aws_ssm_activation.windows_onprem.activation_code
   description = "SSM Hybrid Activation Code for On-Prem Windows"
-  
   overwrite   = true
 }
 

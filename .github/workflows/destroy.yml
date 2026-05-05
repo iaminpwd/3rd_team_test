@@ -1,7 +1,11 @@
 name: Infrastructure Destruction
 
 on:
-  workflow_dispatch: # 깃허브 Actions 탭에서 버튼을 직접 눌러야 실행됩니다.
+  workflow_dispatch:
+
+concurrency:
+  group: terraform-deploy
+  cancel-in-progress: false
 
 jobs:
   terraform-destroy:
@@ -23,23 +27,20 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-northeast-2
 
-    # [추가됨] 1번: 윈도우 서버 내부 설정 초기화 (SSM)
       - name: Windows Server 내부 설정 찌꺼기 초기화 (SSM)
         run: |
-          # Online 상태인 온프레미스 윈도우 인스턴스 ID 찾기
           INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text)
           
-          # 인스턴스가 켜져 있을 때만 청소 스크립트 전송
           if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
             echo "온프레미스 서버($INSTANCE_ID)를 발견했습니다. 초기화 스크립트를 전송합니다."
             
-            SCRIPT_CONTENT=$(cat ./scripts/vpn_bgp_cleanup.ps1)
-            SCRIPT_JSON=$(jq -Rs . < ./scripts/vpn_bgp_cleanup.ps1)
+            B64_SCRIPT=$(cat ./scripts/vpn_bgp_cleanup.ps1 | base64 -w 0)
+            EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
             
             COMMAND_ID=$(aws ssm send-command \
               --document-name "AWS-RunPowerShellScript" \
               --targets "Key=instanceids,Values=$INSTANCE_ID" \
-              --parameters "commands=[$SCRIPT_JSON]" \
+              --parameters "commands=[\"$EXEC_CMD\"]" \
               --query "Command.CommandId" \
               --output text)
               
@@ -51,12 +52,6 @@ jobs:
 
       - name: Terraform 초기화 및 삭제
         working-directory: ./terraform
-        env:
-          # 삭제 시에도 변수 값이 필요합니다 (tfvars 파일이 있는 경우)
-          TF_VAR_aws_vpc_cidr: "10.1.0.0/16"
-          TF_VAR_onprem_vpc_cidr: "192.168.0.0/24"
-          TF_VAR_aws_asn: 64512
-          TF_VAR_onprem_asn: 65000
         run: |
           terraform init
-          terraform destroy -auto-approve # 확인 절차 없이 즉시 삭제
+          terraform destroy -auto-approve
