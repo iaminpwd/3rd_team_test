@@ -1,4 +1,17 @@
 # scripts/vpn_bgp_setup.ps1 
+param (
+    [Parameter(Mandatory=$true)][string]$Tunnel1Ip,
+    [Parameter(Mandatory=$true)][string]$Tunnel1Psk,
+    [Parameter(Mandatory=$true)][string]$Tunnel2Ip,
+    [Parameter(Mandatory=$true)][string]$Tunnel2Psk,
+    [Parameter(Mandatory=$true)][string]$AwsVpcCidr,
+    [Parameter(Mandatory=$true)][string]$BgpLocal1Ip,
+    [Parameter(Mandatory=$true)][string]$BgpPeer1Ip,
+    [Parameter(Mandatory=$true)][string]$BgpLocal2Ip,
+    [Parameter(Mandatory=$true)][string]$BgpPeer2Ip,
+    [Parameter(Mandatory=$true)][string]$OnpremVpcCidr
+)
+
 $ErrorActionPreference = "Stop"
 
 Write-Host "0. 필수 Windows 기능(Routing, RemoteAccess) 설치 검증" -ForegroundColor Cyan
@@ -10,6 +23,21 @@ if ($feature.InstallState -contains "Available" -or $feature.InstallState -conta
 } else {
     Write-Host "필수 기능이 이미 설치되어 있습니다."
 }
+
+Write-Host "0-1. Windows 방화벽 IPsec/IKEv2 필수 포트 및 프로토콜 개방" -ForegroundColor Cyan
+$fwRules = @(
+    @{ Name="Allow-IPsec-IKE-UDP500"; Port="500"; Protocol="UDP" },
+    @{ Name="Allow-IPsec-NATT-UDP4500"; Port="4500"; Protocol="UDP" }
+)
+foreach ($rule in $fwRules) {
+    if (-not (Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue)) {
+        New-NetFirewallRule -DisplayName $rule.Name -Direction Inbound -Action Allow -Protocol $rule.Protocol -LocalPort $rule.Port -ErrorAction SilentlyContinue
+    }
+}
+if (-not (Get-NetFirewallRule -DisplayName "Allow-IPsec-ESP-Proto50" -ErrorAction SilentlyContinue)) {
+    New-NetFirewallRule -DisplayName "Allow-IPsec-ESP-Proto50" -Direction Inbound -Action Allow -Protocol 50 -ErrorAction SilentlyContinue
+}
+
 Write-Host "1. 서비스 종속성 복구 및 RRAS 강제 초기화" -ForegroundColor Cyan
 
 # 1-1. RasMan이 죽는 근본 원인: 종속 서비스(Telephony, SSTP) 강제 활성화
@@ -19,7 +47,6 @@ foreach ($dep in $dependencies) {
     Set-Service $dep -StartupType Automatic -ErrorAction SilentlyContinue
     Start-Service $dep -ErrorAction SilentlyContinue
 }
-
 # 1-2. 핵심 엔진 서비스(RasMan, RemoteAccess) 초기화
 $coreServices = @("RasMan", "RemoteAccess")
 foreach ($svc in $coreServices) {
