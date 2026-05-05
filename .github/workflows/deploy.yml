@@ -35,14 +35,17 @@ jobs:
           terraform apply -auto-approve
 
       - name: "[통합] 인스턴스 인식 및 설정 스크립트 전송"
-        # 작업 디렉토리를 루트로 두고 테라폼 폴더와 스크립트 폴더를 각각 안전하게 참조합니다.
         run: |
           # 1. 인스턴스가 Online이 될 때까지 최대 5분(15회) 대기
           echo "AWS SSM에서 Online 상태의 인스턴스를 찾는 중..."
-          INSTANCE_ID="None"
+          INSTANCE_ID=""
+          
           for i in {1..15}; do
-            RAW_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId | [0]" --output text | tr -d '\r\n')
-            if [ "$RAW_ID" != "None" ] && [ -n "$RAW_ID" ] && [ "$RAW_ID" != "null" ]; then
+            # [수정됨 핵심 로직] AWS CLI의 페이징 None 버그를 원천 차단하기 위해 grep 정규식 사용
+            RAW_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text | grep -o 'mi-[0-9a-f]*' | head -n 1)
+            
+            # RAW_ID에 값이 제대로 담겼을 때만 통과
+            if [ -n "$RAW_ID" ]; then
               INSTANCE_ID=$RAW_ID
               echo "✅ 인스턴스 인식 성공: $INSTANCE_ID"
               break
@@ -51,13 +54,12 @@ jobs:
             sleep 20
           done
 
-          if [ "$INSTANCE_ID" == "None" ]; then
+          if [ -z "$INSTANCE_ID" ]; then
             echo "❌ 오류: 5분을 기다렸으나 Online 상태의 노드를 찾지 못했습니다."
             exit 1
           fi
 
-          # 2. 동일한 Bash 세션 안에서 즉시 스크립트 생성 (GITHUB_ENV를 통한 데이터 유실 원천 차단)
-          # terraform 명령어에 -chdir 옵션을 주어 폴더 이동 없이 안전하게 출력값을 가져옵니다.
+          # 2. 동일한 Bash 세션 안에서 즉시 스크립트 생성
           cat <<EOF > final_script.ps1
           \$AwsVpcCidr = "10.1.0.0/16"
           \$OnpremVpcCidr = "192.168.0.0/24"
@@ -71,14 +73,12 @@ jobs:
           \$BgpLocal2Ip = "$(terraform -chdir=./terraform output -raw vpn_bgp_local2_ip | tr -d '\r\n')"
           EOF
           
-          # scripts 폴더에 있는 원본 ps1 파일 내용을 이어 붙임
           cat ./scripts/vpn_bgp_setup.ps1 >> final_script.ps1
           
-          # Base64 인코딩
           B64_SCRIPT=$(cat final_script.ps1 | base64 -w 0)
           EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
           
-          # 3. InstanceIds 타겟팅 전송 (대소문자 InstanceIds 준수)
+          # 3. InstanceIds 타겟팅 전송
           COMMAND_ID=$(aws ssm send-command \
             --document-name "AWS-RunPowerShellScript" \
             --targets "Key=InstanceIds,Values=$INSTANCE_ID" \
