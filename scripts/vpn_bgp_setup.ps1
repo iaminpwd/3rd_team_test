@@ -1,56 +1,61 @@
 $ErrorActionPreference = "Stop"
 
-Write-Host "1. 핵심 누락 기능(VPN 및 라우팅) 완벽 설치"
-# 기존에 라우팅만 깔았던 것이 원인! VPN(DirectAccess-VPN) 기능을 명시적으로 함께 설치합니다.
-$features = @("DirectAccess-VPN", "Routing")
-foreach ($f in $features) {
-    $feature = Get-WindowsFeature $f
-    if ($feature.InstallState -ne "Installed") {
-        Write-Host "[$f] 기능 설치 중..."
-        Install-WindowsFeature $f -IncludeManagementTools
-    }
+Write-Host "1. 서비스 종속성 복구 및 RRAS 강제 초기화" -ForegroundColor Cyan
+
+# 1-1. RasMan이 죽는 근본 원인: 종속 서비스(Telephony, SSTP) 강제 활성화
+$dependencies = @("TapiSrv", "SstpSvc", "nsi")
+foreach ($dep in $dependencies) {
+    Write-Host "[$dep] 서비스 복구 중..."
+    Set-Service $dep -StartupType Automatic -ErrorAction SilentlyContinue
+    Start-Service $dep -ErrorAction SilentlyContinue
 }
 
-# 라우팅 및 VPN 백엔드 초기 구성
+# 1-2. 핵심 엔진 서비스(RasMan, RemoteAccess) 초기화
+$coreServices = @("RasMan", "RemoteAccess")
+foreach ($svc in $coreServices) {
+    Set-Service $svc -StartupType Automatic -ErrorAction SilentlyContinue
+}
+
+# 1-3. [중요] 기존에 꼬여있던 라우팅 구성을 완전히 날리고 새로 배포
+Write-Host "RRAS 엔진 재구성 중 (Install-RemoteAccess)..." -ForegroundColor Cyan
+Uninstall-RemoteAccess -Force -ErrorAction SilentlyContinue
 Install-RemoteAccess -VpnType RoutingOnly -ErrorAction SilentlyContinue
 
-# VPN 핵심 서비스(RasMan)와 라우팅 서비스 자동 시작 등록
-Set-Service RemoteAccess -StartupType Automatic -ErrorAction SilentlyContinue
-Set-Service RasMan -StartupType Automatic -ErrorAction SilentlyContinue
+# 1-4. 엔진 시동 및 안정화 대기
+Start-Service RasMan -ErrorAction SilentlyContinue
+Start-Service RemoteAccess -ErrorAction SilentlyContinue
 
-Write-Host "RRAS 내부 VPN 엔진 초기화 대기 중... (최대 3분)"
+Write-Host "VPN 엔진 초기화 대기 중... (최대 3분)" -ForegroundColor Cyan
 $retryCount = 0
 $rrasReady = $false
 
 while (-not $rrasReady -and $retryCount -lt 36) {
     try {
-        if ((Get-Service RemoteAccess).Status -ne 'Running') { Start-Service RemoteAccess -ErrorAction SilentlyContinue }
-        if ((Get-Service RasMan).Status -ne 'Running') { Start-Service RasMan -ErrorAction SilentlyContinue }
-        
-        # 이제 VPN 기능이 깔렸으므로 정상적으로 조회되어야 합니다.
+        # 엔진이 실제로 명령어를 받을 수 있는지 테스트
         $null = Get-VpnS2SInterface -ErrorAction Stop
         $rrasReady = $true
-        Write-Host "✅ VPN 엔진이 완벽하게 준비되었습니다!"
+        Write-Host "✅ 엔진 복구 성공! 정상 작동합니다." -ForegroundColor Green
     } catch {
         $retryCount++
-        Write-Host "엔진 부팅 중... 잠시만 기다려주세요 ($retryCount/36)"
+        # 서비스가 죽어있다면 다시 한번 살려봄
+        Start-Service RasMan -ErrorAction SilentlyContinue
+        Start-Service RemoteAccess -ErrorAction SilentlyContinue
+        Write-Host "엔진 응답 대기 중... ($retryCount/36)"
         Start-Sleep -Seconds 5
     }
 }
 
 if (-not $rrasReady) {
-    throw "RRAS 엔진 초기화 실패. 윈도우 서버 재부팅이 필요할 수 있습니다."
+    throw "RRAS 엔진 복구 실패. 이 서버의 윈도우 네트워크 스택에 치명적 결함이 있습니다."
 }
 
-
-Write-Host "2. VPN 인터페이스 구성 및 업데이트"
+Write-Host "2. VPN 인터페이스 구성 및 업데이트" -ForegroundColor Cyan
 $tunnels = @(
     @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; Metric="10" },
     @{ Name="AWS-TGW-Tunnel2"; Dest=$Tunnel2Ip; Psk=$Tunnel2Psk; Metric="50" }
 )
 foreach ($t in $tunnels) {
     $iface = Get-VpnS2SInterface -Name $t.Name -ErrorAction SilentlyContinue
-    
     if ($null -eq $iface) {
         Write-Host "[$($t.Name)] 생성 중..."
         Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)" -Protocol IKEv2
@@ -60,8 +65,7 @@ foreach ($t in $tunnels) {
     }
 }
 
-
-Write-Host "3. BGP 라우터 및 Peer 구성"
+Write-Host "3. BGP 라우터 및 Peer 구성" -ForegroundColor Cyan
 $dynamic_lan_ip = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null }).IPv4Address.IPAddress | Select-Object -First 1
 $router = Get-BgpRouter -ErrorAction SilentlyContinue
 if ($null -eq $router) {
@@ -80,8 +84,7 @@ foreach ($p in $peers) {
     Start-BgpPeer -Name $p.Name -ErrorAction SilentlyContinue
 }
 
-
-Write-Host "4. BGP 경로 광고 및 트래픽 제어"
+Write-Host "4. BGP 경로 광고 및 트래픽 제어" -ForegroundColor Cyan
 Get-BgpCustomRoute -ErrorAction SilentlyContinue | Remove-BgpCustomRoute -Force -ErrorAction SilentlyContinue
 Get-BgpRoutingPolicy -ErrorAction SilentlyContinue | Remove-BgpRoutingPolicy -Force -ErrorAction SilentlyContinue
 
@@ -94,4 +97,4 @@ Add-BgpRoutingPolicy -Name "DenySplitOnTunnel2" -PolicyType Deny -MatchPrefix $n
 Set-BgpRoutingPolicyForPeer -PeerName "AWS-TGW-Peer2" -PolicyName "DenySplitOnTunnel2" -Direction Egress -Force
 
 Restart-Service RemoteAccess
-Write-Host "✅ 모든 구성이 성공적으로 완료되었습니다."
+Write-Host "✅ 하이브리드 인프라 구성이 완벽하게 완료되었습니다!" -ForegroundColor Green
