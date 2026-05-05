@@ -27,7 +27,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-northeast-2
 
-- name: Windows Server 내부 설정 찌꺼기 초기화 (SSM)
+      - name: Windows Server 내부 설정 찌꺼기 초기화 (SSM)
         run: |
           INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text | grep -oE '(i-|mi-)[a-f0-9]+' | head -n 1)
 
