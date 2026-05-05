@@ -15,8 +15,12 @@ $tunnels = @("AWS-TGW-Tunnel1", "AWS-TGW-Tunnel2")
 foreach ($t in $tunnels) {
     Remove-VpnS2SInterface -Name $t -Force -ErrorAction SilentlyContinue
 }
-
 Write-Host "4. 라우팅 서비스 재시작하여 초기화 상태 반영"
 Restart-Service RemoteAccess -ErrorAction SilentlyContinue
+
+# ===== [추가된 핵심 부분] =====
+Write-Host "5. RRAS 엔진 구성 완전 초기화 (현업 표준 선언적 초기화)"
+Uninstall-RemoteAccess -Force -ErrorAction SilentlyContinue
+# ==============================
 
 Write-Host "✅ 윈도우 서버 내부의 하이브리드 클라우드(VPN/BGP) 설정이 모두 초기화되었습니다."

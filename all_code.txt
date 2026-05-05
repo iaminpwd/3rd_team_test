@@ -1,0 +1,451 @@
+
+# FILE: ./terraform/variables.tf
+variable "aws_region" {
+  description = "AWS 리전"
+  type        = string
+  default     = "ap-northeast-2"
+}
+
+variable "aws_vpc_cidr" {
+  description = "AWS VPC의 CIDR 대역"
+  type        = string
+}
+
+variable "onprem_vpc_cidr" {
+  description = "온프레미스(홈 랩)의 CIDR 대역"
+  type        = string
+}
+
+variable "aws_asn" {
+  description = "AWS Transit Gateway의 BGP ASN"
+  type        = number
+}
+
+variable "onprem_asn" {
+  description = "온프레미스(홈 랩)의 BGP ASN"
+  type        = number
+}
+# FILE: ./.github/workflows/destroy.yml
+name: Infrastructure Destruction
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: terraform-deploy
+  cancel-in-progress: false
+
+jobs:
+  terraform-destroy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v3
+
+      - name: Terraform 설치
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+          terraform_wrapper: false
+
+      - name: AWS 자격 증명 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      - name: Windows Server 내부 설정 찌꺼기 초기화 (SSM)
+        run: |
+          INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text)
+          
+          if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+            echo "온프레미스 서버($INSTANCE_ID)를 발견했습니다. 초기화 스크립트를 전송합니다."
+            
+            B64_SCRIPT=$(cat ./scripts/vpn_bgp_cleanup.ps1 | base64 -w 0)
+            EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
+            
+            COMMAND_ID=$(aws ssm send-command \
+              --document-name "AWS-RunPowerShellScript" \
+              --targets "Key=instanceids,Values=$INSTANCE_ID" \
+              --parameters "commands=[\"$EXEC_CMD\"]" \
+              --query "Command.CommandId" \
+              --output text)
+              
+            echo "명령 전송 완료. Command ID: $COMMAND_ID"
+            aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID"
+          else
+            echo "온라인 상태인 서버를 찾을 수 없어 내부 초기화를 건너뜁니다."
+          fi
+
+      - name: Terraform 초기화 및 삭제
+        working-directory: ./terraform
+        run: |
+          terraform init
+          terraform destroy -auto-approve
+# FILE: ./terraform/main.tf
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+
+  backend "s3" {
+    bucket         = "my-terraform-state-bucket-skdmal2213"
+    key            = "dr-project/terraform.tfstate"
+    region         = "ap-northeast-2"
+    encrypt        = true
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+# ---------------------------------------------------------
+# 1. 보안 데이터 및 설정 (SSM Parameter Store)
+# ---------------------------------------------------------
+data "aws_ssm_parameter" "tunnel1_psk" {
+  name            = "/vpn/home/tunnel1_psk"
+  with_decryption = true
+}
+
+data "aws_ssm_parameter" "tunnel2_psk" {
+  name            = "/vpn/home/tunnel2_psk"
+  with_decryption = true
+}
+
+data "aws_ssm_parameter" "cgw_public_ip" {
+  name = "/vpn/home/cgw_public_ip"
+}
+
+data "aws_ssm_parameter" "windows_password" {
+  name = "/vpn/home/windows_password"
+}
+
+# ---------------------------------------------------------
+# 2. VPC 및 기본 네트워크 구성
+# ---------------------------------------------------------
+resource "aws_vpc" "aws_vpc" {
+  cidr_block           = var.aws_vpc_cidr
+  enable_dns_hostnames = true
+  tags = { Name = "VPC-A-AWS-Cloud" }
+}
+
+resource "aws_subnet" "aws_subnet" {
+  vpc_id            = aws_vpc.aws_vpc.id
+  cidr_block        = cidrsubnet(var.aws_vpc_cidr, 8, 1)
+  availability_zone = "${var.aws_region}a"
+  tags = { Name = "Subnet-A-AWS" }
+}
+
+resource "aws_route_table" "aws_rt" {
+  vpc_id = aws_vpc.aws_vpc.id
+  tags = { Name = "RT-A-AWS" }
+}
+
+resource "aws_route_table_association" "aws_rt_assoc" {
+  subnet_id      = aws_subnet.aws_subnet.id
+  route_table_id = aws_route_table.aws_rt.id
+}
+
+# ---------------------------------------------------------
+# 3. 하이브리드 커넥티비티 (TGW + CGW + VPN)
+# ---------------------------------------------------------
+resource "aws_ec2_transit_gateway" "tgw" {
+  amazon_side_asn                 = var.aws_asn
+  auto_accept_shared_attachments  = "enable"
+  default_route_table_association = "enable"
+  default_route_table_propagation = "enable" 
+  tags = { Name = "TGW-Main" }
+}
+
+resource "aws_ec2_transit_gateway_vpc_attachment" "tgw_attach_vpc_a" {
+  subnet_ids         = [aws_subnet.aws_subnet.id]
+  transit_gateway_id = aws_ec2_transit_gateway.tgw.id
+  vpc_id             = aws_vpc.aws_vpc.id
+  tags = { Name = "TGW-Attach-VPC-A" }
+}
+
+resource "aws_route" "aws_to_onprem" {
+  route_table_id         = aws_route_table.aws_rt.id
+  destination_cidr_block = var.onprem_vpc_cidr
+  transit_gateway_id     = aws_ec2_transit_gateway.tgw.id
+  depends_on             = [aws_ec2_transit_gateway_vpc_attachment.tgw_attach_vpc_a]
+}
+
+resource "aws_customer_gateway" "cgw" {
+  bgp_asn    = var.onprem_asn
+  ip_address = data.aws_ssm_parameter.cgw_public_ip.value 
+  type       = "ipsec.1"
+  tags = { Name = "CGW-Home-Windows-Server" }
+}
+
+resource "aws_vpn_connection" "vpn" {
+  customer_gateway_id = aws_customer_gateway.cgw.id
+  transit_gateway_id  = aws_ec2_transit_gateway.tgw.id
+  type                = aws_customer_gateway.cgw.type
+  
+  static_routes_only  = false 
+
+  tunnel1_preshared_key = data.aws_ssm_parameter.tunnel1_psk.value
+  tunnel1_inside_cidr   = "169.254.127.124/30"
+  
+  tunnel2_preshared_key = data.aws_ssm_parameter.tunnel2_psk.value
+  tunnel2_inside_cidr   = "169.254.177.40/30"
+
+  tags = { Name = "VPN-TGW-to-Home" }
+}
+
+# ---------------------------------------------------------
+# 4. 테스트 자원 (Security Group + EC2)
+# ---------------------------------------------------------
+resource "aws_security_group" "ping_sg" {
+  name        = "allow_icmp_from_home"
+  description = "Allow ICMP Ping from On-Premise"
+  vpc_id      = aws_vpc.aws_vpc.id
+
+  ingress {
+    from_port   = -1
+    to_port     = -1
+    protocol    = "icmp"
+    cidr_blocks = [var.onprem_vpc_cidr]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = { Name = "SG-Allow-Home-Ping" }
+}
+
+data "aws_ami" "amazon_linux_2023" {
+  most_recent = true
+  owners      = ["amazon"]
+  filter {
+    name   = "name"
+    values = ["al2023-ami-2023.*-x86_64"]
+  }
+}
+
+resource "aws_instance" "test_ec2" {
+  ami                    = data.aws_ami.amazon_linux_2023.id
+  instance_type          = "t3.micro"
+  subnet_id              = aws_subnet.aws_subnet.id
+  vpc_security_group_ids = [aws_security_group.ping_sg.id]
+  tags = { Name = "Test-EC2-Target" }
+}
+
+# --------------------------------------------------------- 
+# 5. SSM Hybrid Activation
+# ---------------------------------------------------------
+resource "aws_iam_role" "ssm_hybrid_role" {
+  name = "SSM-Hybrid-Windows-Role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "ssm.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ssm_hybrid_attach" {
+  role       = aws_iam_role.ssm_hybrid_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_ssm_activation" "windows_onprem" {
+  name               = "windows-home-server-activation"
+  iam_role           = aws_iam_role.ssm_hybrid_role.name
+  registration_limit = 5
+  depends_on         = [aws_iam_role_policy_attachment.ssm_hybrid_attach]
+}
+
+# =========================================================
+# 생성된 ID와 Code를 파라미터 스토어에 자동 저장
+# =========================================================
+resource "aws_ssm_parameter" "activation_id" {
+  name        = "/vpn/home/ssm_activation_id"
+  type        = "String"
+  value       = aws_ssm_activation.windows_onprem.id
+  description = "SSM Hybrid Activation ID for On-Prem Windows"
+  overwrite   = true 
+}
+
+resource "aws_ssm_parameter" "activation_code" {
+  name        = "/vpn/home/ssm_activation_code"
+  type        = "SecureString"
+  value       = aws_ssm_activation.windows_onprem.activation_code
+  description = "SSM Hybrid Activation Code for On-Prem Windows"
+  overwrite   = true
+}
+
+# ---------------------------------------------------------
+# 6. 파이프라인으로 넘겨줄 Outputs
+# ---------------------------------------------------------
+output "ssm_activation_id" {
+  value = aws_ssm_activation.windows_onprem.id
+}
+
+output "ssm_activation_code" {
+  value     = aws_ssm_activation.windows_onprem.activation_code
+  sensitive = true
+}
+
+output "vpn_tunnel1_ip" {
+  value = aws_vpn_connection.vpn.tunnel1_address
+}
+
+output "vpn_tunnel1_psk" {
+  value     = aws_vpn_connection.vpn.tunnel1_preshared_key
+  sensitive = true
+}
+
+output "vpn_bgp_peer1_ip" {
+  value = aws_vpn_connection.vpn.tunnel1_vgw_inside_address
+}
+
+output "vpn_bgp_local1_ip" {
+  value = aws_vpn_connection.vpn.tunnel1_cgw_inside_address
+}
+
+output "vpn_tunnel2_ip" {
+  value = aws_vpn_connection.vpn.tunnel2_address
+}
+
+output "vpn_tunnel2_psk" {
+  value     = aws_vpn_connection.vpn.tunnel2_preshared_key
+  sensitive = true
+}
+
+output "vpn_bgp_peer2_ip" {
+  value = aws_vpn_connection.vpn.tunnel2_vgw_inside_address
+}
+
+output "vpn_bgp_local2_ip" {
+  value = aws_vpn_connection.vpn.tunnel2_cgw_inside_address
+}
+# FILE: ./terraform/.terraform.lock.hcl
+# This file is maintained automatically by "terraform init".
+# Manual edits may be lost in future updates.
+
+provider "registry.terraform.io/hashicorp/aws" {
+  version     = "5.100.0"
+  constraints = "~> 5.0"
+  hashes = [
+    "h1:edXOJWE4ORX8Fm+dpVpICzMZJat4AX0VRCAy/xkcOc0=",
+    "zh:054b8dd49f0549c9a7cc27d159e45327b7b65cf404da5e5a20da154b90b8a644",
+    "zh:0b97bf8d5e03d15d83cc40b0530a1f84b459354939ba6f135a0086c20ebbe6b2",
+    "zh:1589a2266af699cbd5d80737a0fe02e54ec9cf2ca54e7e00ac51c7359056f274",
+    "zh:6330766f1d85f01ae6ea90d1b214b8b74cc8c1badc4696b165b36ddd4cc15f7b",
+    "zh:7c8c2e30d8e55291b86fcb64bdf6c25489d538688545eb48fd74ad622e5d3862",
+    "zh:99b1003bd9bd32ee323544da897148f46a527f622dc3971af63ea3e251596342",
+    "zh:9b12af85486a96aedd8d7984b0ff811a4b42e3d88dad1a3fb4c0b580d04fa425",
+    "zh:9f8b909d3ec50ade83c8062290378b1ec553edef6a447c56dadc01a99f4eaa93",
+    "zh:aaef921ff9aabaf8b1869a86d692ebd24fbd4e12c21205034bb679b9caf883a2",
+    "zh:ac882313207aba00dd5a76dbd572a0ddc818bb9cbf5c9d61b28fe30efaec951e",
+    "zh:bb64e8aff37becab373a1a0cc1080990785304141af42ed6aa3dd4913b000421",
+    "zh:dfe495f6621df5540d9c92ad40b8067376350b005c637ea6efac5dc15028add4",
+    "zh:f0ddf0eaf052766cfe09dea8200a946519f653c384ab4336e2a4a64fdd6310e9",
+    "zh:f1b7e684f4c7ae1eed272b6de7d2049bb87a0275cb04dbb7cda6636f600699c9",
+    "zh:ff461571e3f233699bf690db319dfe46aec75e58726636a0d97dd9ac6e32fb70",
+  ]
+}
+
+# FILE: ./.github/workflows/deploy.yml
+name: Hybrid Cloud DR Provisioning
+
+on:
+  push:
+    branches: [ "main" ]
+
+concurrency:
+  group: terraform-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy-infra-and-configure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v3
+
+      - name: Terraform 설치
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+          terraform_wrapper: false
+
+      - name: AWS 자격 증명 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      - name: Terraform 초기화 및 배포
+        working-directory: ./terraform
+        run: |
+          terraform init
+          terraform apply -auto-approve
+
+      - name: Terraform Output 추출 및 환경 변수 등록
+        working-directory: ./terraform
+        run: |
+          echo "TUNNEL1_IP=$(terraform output -raw vpn_tunnel1_ip)" >> $GITHUB_ENV
+          echo "TUNNEL1_PSK=$(terraform output -raw vpn_tunnel1_psk)" >> $GITHUB_ENV
+          echo "BGP_PEER1_IP=$(terraform output -raw vpn_bgp_peer1_ip)" >> $GITHUB_ENV
+          echo "BGP_LOCAL1_IP=$(terraform output -raw vpn_bgp_local1_ip)" >> $GITHUB_ENV
+          
+          echo "TUNNEL2_IP=$(terraform output -raw vpn_tunnel2_ip)" >> $GITHUB_ENV
+          echo "TUNNEL2_PSK=$(terraform output -raw vpn_tunnel2_psk)" >> $GITHUB_ENV
+          echo "BGP_PEER2_IP=$(terraform output -raw vpn_bgp_peer2_ip)" >> $GITHUB_ENV
+          echo "BGP_LOCAL2_IP=$(terraform output -raw vpn_bgp_local2_ip)" >> $GITHUB_ENV
+          
+          INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text)
+          echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
+
+      - name: AWS SSM으로 Windows 설정 스크립트 전송 및 대기
+        run: |
+          cat <<EOF > final_script.ps1
+          \$AwsVpcCidr = "10.1.0.0/16"
+          \$OnpremVpcCidr = "192.168.0.0/24"
+          \$Tunnel1Ip = "${{ env.TUNNEL1_IP }}"
+          \$Tunnel1Psk = "${{ env.TUNNEL1_PSK }}"
+          \$BgpPeer1Ip = "${{ env.BGP_PEER1_IP }}"
+          \$BgpLocal1Ip = "${{ env.BGP_LOCAL1_IP }}"
+          
+          \$Tunnel2Ip = "${{ env.TUNNEL2_IP }}"
+          \$Tunnel2Psk = "${{ env.TUNNEL2_PSK }}"
+          \$BgpPeer2Ip = "${{ env.BGP_PEER2_IP }}"
+          \$BgpLocal2Ip = "${{ env.BGP_LOCAL2_IP }}"
+          EOF
+          
+          cat ./scripts/vpn_bgp_setup.ps1 >> final_script.ps1
+          
+          B64_SCRIPT=$(cat final_script.ps1 | base64 -w 0)
+          
+          EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
+          
+          COMMAND_ID=$(aws ssm send-command \
+            --document-name "AWS-RunPowerShellScript" \
+            --targets "Key=instanceids,Values=${{ env.INSTANCE_ID }}" \
+            --parameters "commands=[\"$EXEC_CMD\"]" \
+            --query "Command.CommandId" \
+            --output text)
+            
+          echo "명령 전송 완료. Command ID: $COMMAND_ID"
+          
+          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "${{ env.INSTANCE_ID }}"
+# FILE: ./terraform/terraform.tfvars
+aws_region      = "ap-northeast-2"
+aws_vpc_cidr    = "10.1.0.0/16"
+onprem_vpc_cidr = "192.168.0.0/24"
+aws_asn         = 64512
+onprem_asn      = 65000

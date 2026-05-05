@@ -70,13 +70,6 @@ if (-not $rrasConfigured) {
     Install-RemoteAccess -VpnType VpnRouting -ErrorAction Stop
 }
 
-# 명시적으로 RouterType을 7(LAN & WAN)로 강제 설정하여 BGP(Lan Routing) 활성화 보장
-Write-Host "LAN Routing(RouterType=7) 강제 활성화 설정..." -ForegroundColor Cyan
-$regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
-if (Test-Path $regPath) {
-    Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -ErrorAction SilentlyContinue
-}
-
 # 1-4. 엔진 시동 및 안정화 대기
 Start-Service RasMan -ErrorAction SilentlyContinue
 Start-Service RemoteAccess -ErrorAction SilentlyContinue
