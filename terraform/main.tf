@@ -106,11 +106,11 @@ resource "aws_vpn_connection" "vpn" {
 
   tunnel1_preshared_key = data.aws_ssm_parameter.tunnel1_psk.value
   # [변경] 윈도우 OS의 APIPA(169.254) 차단 정책을 피하기 위해 사설 대역 지정
-  tunnel1_inside_cidr   = "10.254.254.124/30" 
+  tunnel1_inside_cidr   = "169.254.254.124/30" 
   
   tunnel2_preshared_key = data.aws_ssm_parameter.tunnel2_psk.value
   # [변경] 윈도우 OS의 APIPA(169.254) 차단 정책을 피하기 위해 사설 대역 지정
-  tunnel2_inside_cidr   = "10.254.254.128/30"
+  tunnel2_inside_cidr   = "169.254.254.128/30"
 
   tags = { Name = "VPN-TGW-to-Home" }
 }
