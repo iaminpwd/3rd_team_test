@@ -1,0 +1,35 @@
+name: Infrastructure Destruction
+
+on:
+  workflow_dispatch: # 깃허브 Actions 탭에서 버튼을 직접 눌러야 실행됩니다.
+
+jobs:
+  terraform-destroy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v3
+
+      - name: Terraform 설치
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+
+      - name: AWS 자격 증명 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      - name: Terraform 초기화 및 삭제
+        working-directory: ./terraform
+        env:
+          # 삭제 시에도 변수 값이 필요합니다 (tfvars 파일이 있는 경우)
+          TF_VAR_aws_vpc_cidr: "10.1.0.0/16"
+          TF_VAR_onprem_vpc_cidr: "192.168.0.0/24"
+          TF_VAR_aws_asn: 64512
+          TF_VAR_onprem_asn: 65000
+        run: |
+          terraform init
+          terraform destroy -auto-approve # 확인 절차 없이 즉시 삭제

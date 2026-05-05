@@ -2,12 +2,22 @@
 # main.tf
 # ---------------------------------------------------------
 
+# terraform/main.tf
+
 terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+  }
+
+  # [추가] 리모트 백엔드 설정: 상태 파일을 S3에 저장합니다.
+  backend "s3" {
+    bucket         = "my-terraform-state-bucket" # 만든 버킷 이름
+    key            = "dr-project/terraform.tfstate"
+    region         = "ap-northeast-2"
+    encrypt        = true
   }
 }
 
@@ -154,7 +164,7 @@ resource "aws_instance" "test_ec2" {
   tags = { Name = "Test-EC2-Target" }
 }
 
-# ---------------------------------------------------------
+# --------------------------------------------------------- 
 # 5. SSM Hybrid Activation
 # ---------------------------------------------------------
 resource "aws_iam_role" "ssm_hybrid_role" {
