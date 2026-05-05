@@ -56,13 +56,27 @@ foreach ($svc in $coreServices) {
 # 1-3. [중요] 기존에 꼬여있던 라우팅 구성을 완전히 날리고 새로 배포
 Write-Host "1-3. RRAS 엔진 구성 상태 확인 및 설치..." -ForegroundColor Cyan
 
-# RRAS가 이미 구성되어 있는지 확인하고, 안 되어 있을 때만 설치 (데드락 방지)
+# RRAS가 이미 구성되어 있는지 확인하고, 안 되어 있거나 LAN Routing이 비활성화된 경우 설치
 $rrasConfigured = $false
 try {
     $null = Get-RemoteAccess -ErrorAction Stop
     $rrasConfigured = $true
-    Write-Host "RRAS 엔진이 이미 구성되어 있습니다. 설치를 건너뜁니다."
+    Write-Host "RRAS 엔진이 이미 구성되어 있습니다."
+    
+    $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
+    $routerType = (Get-ItemProperty -Path $regPath -Name "RouterType" -ErrorAction SilentlyContinue).RouterType
+    if ($routerType -ne 7 -and $routerType -ne 4) {
+        Write-Host "LAN Routing이 활성화되어 있지 않아 기존 구성을 해제합니다..." -ForegroundColor Yellow
+        Uninstall-RemoteAccess -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 5
+        $rrasConfigured = $false
+    } else {
+        Write-Host "LAN Routing이 활성화되어 있어 설치를 건너뜁니다."
+    }
 } catch {
+}
+
+if (-not $rrasConfigured) {
     Write-Host "새로운 RRAS 엔진 구성을 시작합니다 (Install-RemoteAccess)..."
     Install-RemoteAccess -VpnType RoutingOnly -ErrorAction Stop
 }
