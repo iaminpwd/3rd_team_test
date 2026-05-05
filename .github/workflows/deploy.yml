@@ -47,7 +47,15 @@ jobs:
           echo "BGP_PEER2_IP=$(terraform output -raw vpn_bgp_peer2_ip)" >> $GITHUB_ENV
           echo "BGP_LOCAL2_IP=$(terraform output -raw vpn_bgp_local2_ip)" >> $GITHUB_ENV
           
-          INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text)
+          # [수정됨] 무조건 첫 번째 Online 인스턴스 1개만 가져옵니다.
+          INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId | [0]" --output text)
+          
+          # 인스턴스가 없을 경우 예외 처리
+          if [ "$INSTANCE_ID" == "None" ] || [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" == "null" ]; then
+            echo "❌ 오류: 온라인 상태인 SSM 노드를 찾을 수 없습니다. VM의 전원과 인터넷 연결을 확인하세요."
+            exit 1
+          fi
+          
           echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
 
       - name: AWS SSM으로 Windows 설정 스크립트 전송 및 대기

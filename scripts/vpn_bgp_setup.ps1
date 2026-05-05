@@ -53,10 +53,7 @@ foreach ($svc in $coreServices) {
     Set-Service $svc -StartupType Automatic -ErrorAction SilentlyContinue
 }
 
-# 1-3. [중요] 기존에 꼬여있던 라우팅 구성을 완전히 날리고 새로 배포
-Write-Host "1-3. RRAS 엔진 구성 상태 확인 및 설치..." -ForegroundColor Cyan
-
-# RRAS가 이미 구성되어 있는지 확인
+# 1-3. RRAS 엔진 구성 상태 확인 및 설치...
 $rrasConfigured = $false
 try {
     $null = Get-RemoteAccess -ErrorAction Stop
@@ -68,6 +65,18 @@ try {
 if (-not $rrasConfigured) {
     Write-Host "새로운 RRAS 엔진 구성을 시작합니다 (Install-RemoteAccess)..."
     Install-RemoteAccess -VpnType VpnRouting -ErrorAction Stop
+    
+    # [복구된 핵심 로직] Windows Server에서 BGP(Lan Routing)를 켜려면 이 레지스트리가 필수입니다.
+    Write-Host "LAN Routing(RouterType=7) 필수 활성화 설정..." -ForegroundColor Cyan
+    $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
+    if (Test-Path $regPath) {
+        Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -ErrorAction SilentlyContinue
+    }
+    
+    # 레지스트리 적용을 위해 BGP 설정 전 라우팅 서비스를 한 번 재시작해야 모듈이 올라옵니다.
+    Write-Host "라우팅 서비스 재시작 및 BGP 모듈 로드 중..."
+    Restart-Service RemoteAccess -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 5
 }
 
 # 1-4. 엔진 시동 및 안정화 대기
