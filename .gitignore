@@ -9,7 +9,6 @@ ansible/inventory.ini
 *.tfstate.*
 
 # 3. 변수 설정 파일 (비밀번호, API 키 등 포함 - 절대 업로드 금지)
-*.tfvars
 *.tfvars.json
 
 # 4. 실행 시 생성되는 임시 파일 및 로그
