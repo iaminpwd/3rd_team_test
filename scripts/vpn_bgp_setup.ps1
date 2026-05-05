@@ -44,7 +44,7 @@ try {
 Start-Sleep -Seconds 5
 
 Write-Host "깨끗한 상태에서 RRAS 엔진 재설치 중..."
-Install-RemoteAccess -VpnType VpnRouting -ErrorAction Stop
+Install-RemoteAccess -VpnType VpnS2S -ErrorAction Stop
 
 Write-Host "BGP 모듈을 깨우기 위해 LAN Routing(RouterType=7) 강제 세팅..."
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
