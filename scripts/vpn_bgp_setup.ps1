@@ -1,13 +1,26 @@
 $ErrorActionPreference = "Stop"
 
-Write-Host "1. RRAS(Routing) 기능 설치 및 확인"
+Write-Host "1. RRAS(Routing) 기능 설치 및 서비스 초기화"
+# 1-1. Windows 라우팅 기능 설치
 $rras = Get-WindowsFeature Routing
 if ($rras.InstallState -ne "Installed") {
     Install-WindowsFeature Routing -IncludeManagementTools
 }
-Start-Service RemoteAccess -ErrorAction SilentlyContinue
 
-Write-Host "2. VPN 인터페이스 구성 (Active/Standby)"
+# 1-2. [핵심 수정] 라우팅 전용 모드로 RRAS 초기 구성 (이미 되어있으면 무시)
+Install-RemoteAccess -VpnType RoutingOnly -ErrorAction SilentlyContinue
+
+# 1-3. 서비스 자동 시작 설정 및 강제 실행
+Set-Service RemoteAccess -StartupType Automatic -ErrorAction SilentlyContinue
+if ((Get-Service RemoteAccess).Status -ne 'Running') {
+    Start-Service RemoteAccess
+}
+
+# 1-4. [핵심 수정] 서비스가 명령어를 받을 준비가 될 때까지 3초 대기
+Start-Sleep -Seconds 3
+
+
+Write-Host "2. VPN 인터페이스 구성 및 업데이트"
 $tunnels = @(
     @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; Metric="10" },
     @{ Name="AWS-TGW-Tunnel2"; Dest=$Tunnel2Ip; Psk=$Tunnel2Psk; Metric="50" }
@@ -15,11 +28,14 @@ $tunnels = @(
 foreach ($t in $tunnels) {
     $iface = Get-VpnS2SInterface -Name $t.Name -ErrorAction SilentlyContinue
     if ($null -eq $iface) {
+        Write-Host "[$($t.Name)] 생성 중..."
         Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)" -Protocol IKEv2
     } elseif ($iface.Destination -ne $t.Dest) {
+        Write-Host "[$($t.Name)] 업데이트 중..."
         Set-VpnS2SInterface -Name $t.Name -Destination $t.Dest -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)"
     }
 }
+
 
 Write-Host "3. BGP 라우터 및 Peer 구성"
 $dynamic_lan_ip = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null }).IPv4Address.IPAddress | Select-Object -First 1
@@ -40,7 +56,8 @@ foreach ($p in $peers) {
     Start-BgpPeer -Name $p.Name -ErrorAction SilentlyContinue
 }
 
-Write-Host "4. BGP 경로 광고 및 우선순위 정책 적용"
+
+Write-Host "4. BGP 경로 광고 및 트래픽 제어"
 Get-BgpCustomRoute -ErrorAction SilentlyContinue | Remove-BgpCustomRoute -Force -ErrorAction SilentlyContinue
 Get-BgpRoutingPolicy -ErrorAction SilentlyContinue | Remove-BgpRoutingPolicy -Force -ErrorAction SilentlyContinue
 
@@ -53,4 +70,4 @@ Add-BgpRoutingPolicy -Name "DenySplitOnTunnel2" -PolicyType Deny -MatchPrefix $n
 Set-BgpRoutingPolicyForPeer -PeerName "AWS-TGW-Peer2" -PolicyName "DenySplitOnTunnel2" -Direction Egress -Force
 
 Restart-Service RemoteAccess
-Write-Host "모든 구성이 성공적으로 완료되었습니다."
+Write-Host "✅ 모든 구성이 성공적으로 완료되었습니다."
