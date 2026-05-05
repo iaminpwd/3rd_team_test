@@ -1,0 +1,78 @@
+name: Hybrid Cloud DR Provisioning
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  deploy-infra-and-configure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v3
+
+      # [수정 1] AWS 인증 추가 (GitHub Secrets에 미리 등록해둬야 합니다)
+      - name: AWS 자격 증명 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      - name: Terraform 초기화 및 배포
+        working-directory: ./terraform
+        run: |
+          terraform init
+          terraform apply -auto-approve
+
+      - name: Terraform Output 추출 및 환경 변수 등록
+        working-directory: ./terraform
+        run: |
+          echo "TUNNEL1_IP=$(terraform output -raw vpn_tunnel1_ip)" >> $GITHUB_ENV
+          echo "TUNNEL1_PSK=$(terraform output -raw vpn_tunnel1_psk)" >> $GITHUB_ENV
+          echo "BGP_PEER1_IP=$(terraform output -raw vpn_bgp_peer1_ip)" >> $GITHUB_ENV
+          echo "BGP_LOCAL1_IP=$(terraform output -raw vpn_bgp_local1_ip)" >> $GITHUB_ENV
+          
+          echo "TUNNEL2_IP=$(terraform output -raw vpn_tunnel2_ip)" >> $GITHUB_ENV
+          echo "TUNNEL2_PSK=$(terraform output -raw vpn_tunnel2_psk)" >> $GITHUB_ENV
+          echo "BGP_PEER2_IP=$(terraform output -raw vpn_bgp_peer2_ip)" >> $GITHUB_ENV
+          echo "BGP_LOCAL2_IP=$(terraform output -raw vpn_bgp_local2_ip)" >> $GITHUB_ENV
+          
+          # Online 상태인 온프레미스 윈도우 인스턴스 ID 찾기
+          INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text)
+          echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
+
+      - name: AWS SSM으로 Windows 설정 스크립트 전송 및 대기
+        run: |
+          # [수정 3] 파라미터를 스크립트 상단에 변수로 직접 때려넣는 병합 파일 생성
+          cat <<EOF > final_script.ps1
+          \$AwsVpcCidr = "10.1.0.0/16"
+          \$Tunnel1Ip = "${{ env.TUNNEL1_IP }}"
+          \$Tunnel1Psk = "${{ env.TUNNEL1_PSK }}"
+          \$BgpPeer1Ip = "${{ env.BGP_PEER1_IP }}"
+          \$BgpLocal1Ip = "${{ env.BGP_LOCAL1_IP }}"
+          
+          \$Tunnel2Ip = "${{ env.TUNNEL2_IP }}"
+          \$Tunnel2Psk = "${{ env.TUNNEL2_PSK }}"
+          \$BgpPeer2Ip = "${{ env.BGP_PEER2_IP }}"
+          \$BgpLocal2Ip = "${{ env.BGP_LOCAL2_IP }}"
+          EOF
+          
+          # 만들어진 변수들 밑에 실제 동작 스크립트 본문 이어붙이기
+          cat ./scripts/vpn_bgp_setup.ps1 >> final_script.ps1
+          
+          # 따옴표나 특수문자로 인해 JSON 문법이 깨지는 것을 막기 위해 jq로 안전하게 인코딩
+          SCRIPT_JSON=$(jq -Rs . < final_script.ps1)
+          
+          # 대상 서버로 명령 전송
+          COMMAND_ID=$(aws ssm send-command \
+            --document-name "AWS-RunPowerShellScript" \
+            --targets "Key=instanceids,Values=${{ env.INSTANCE_ID }}" \
+            --parameters "commands=[$SCRIPT_JSON]" \
+            --query "Command.CommandId" \
+            --output text)
+            
+          echo "명령 전송 완료. Command ID: $COMMAND_ID"
+          
+          # 타겟 서버에서 실행이 끝날 때까지 대기
+          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "${{ env.INSTANCE_ID }}"

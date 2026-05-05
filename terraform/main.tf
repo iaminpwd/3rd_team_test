@@ -181,76 +181,49 @@ resource "aws_ssm_activation" "windows_onprem" {
   depends_on         = [aws_iam_role_policy_attachment.ssm_hybrid_attach]
 }
 
-# ---------------------------------------------------------
-# 6. Ansible Inventory 파일 자동 생성 (동적 구성)
-# ---------------------------------------------------------
-resource "local_file" "ansible_inventory" {
-  content  = <<-EOT
-    [windows_server]
-    ${data.aws_ssm_parameter.cgw_public_ip.value} ansible_port=5985
-
-    [windows_server:vars]
-    ansible_user=Administrator
-    ansible_connection=winrm
-    ansible_winrm_server_cert_validation=ignore
-    ansible_python_interpreter=/usr/bin/python3
-    ansible_winrm_transport=basic
-  EOT
-  filename = "../ansible/inventory.ini"
-}
 
 # ---------------------------------------------------------
-# 7. Ansible 실행 자동화 (Triggers 반영)
+# 6. 파이프라인으로 넘겨줄 Outputs
 # ---------------------------------------------------------
-resource "null_resource" "run_ansible" {
-  triggers = {
-    playbook_hash = filesha256("../ansible/setup_windows_vpn.yml")
-    tunnel1_ip    = aws_vpn_connection.vpn.tunnel1_address
-    tunnel2_ip    = aws_vpn_connection.vpn.tunnel2_address
-    ssm_id        = aws_ssm_activation.windows_onprem.id
-  }
-
-  depends_on = [
-    aws_vpn_connection.vpn,
-    aws_ssm_activation.windows_onprem,
-    local_file.ansible_inventory # [추가됨] 인벤토리 파일이 완전히 생성된 후 Ansible 실행 보장
-  ]
-
-  provisioner "local-exec" {
-    working_dir = "../ansible"
-    
-    # 보안 업데이트: 모든 민감 정보와 동적 IP를 환경 변수로 처리
-    environment = {
-      WINRM_PASS      = data.aws_ssm_parameter.windows_password.value 
-      SSM_CODE        = aws_ssm_activation.windows_onprem.activation_code
-      SSM_ID          = aws_ssm_activation.windows_onprem.id
-      TUNNEL1_IP      = aws_vpn_connection.vpn.tunnel1_address
-      TUNNEL1_PSK     = data.aws_ssm_parameter.tunnel1_psk.value
-      TUNNEL2_IP      = aws_vpn_connection.vpn.tunnel2_address
-      TUNNEL2_PSK     = data.aws_ssm_parameter.tunnel2_psk.value
-      
-      # Terraform이 계산한 BGP Inside IP 주입
-      BGP_PEER1_IP    = aws_vpn_connection.vpn.tunnel1_vgw_inside_address
-      BGP_LOCAL1_IP   = aws_vpn_connection.vpn.tunnel1_cgw_inside_address
-      BGP_PEER2_IP    = aws_vpn_connection.vpn.tunnel2_vgw_inside_address
-      BGP_LOCAL2_IP   = aws_vpn_connection.vpn.tunnel2_cgw_inside_address
-      
-      # [추가됨] Windows 내부에서 BGP 라우팅 구성 시 사용할 온프레미스 대역 주입
-      ONPREM_VPC_CIDR = var.onprem_vpc_cidr 
-    }
-
-    command = "ansible-playbook -i inventory.ini setup_windows_vpn.yml"
-  }
-}
-
-# ---------------------------------------------------------
-# 8. Outputs
-# ---------------------------------------------------------
-output "test_ec2_private_ip" {
-  value = aws_instance.test_ec2.private_ip
+output "ssm_activation_id" {
+  value = aws_ssm_activation.windows_onprem.id
 }
 
 output "ssm_activation_code" {
   value     = aws_ssm_activation.windows_onprem.activation_code
   sensitive = true
+}
+
+output "vpn_tunnel1_ip" {
+  value = aws_vpn_connection.vpn.tunnel1_address
+}
+
+output "vpn_tunnel1_psk" {
+  value     = aws_vpn_connection.vpn.tunnel1_preshared_key
+  sensitive = true
+}
+
+output "vpn_bgp_peer1_ip" {
+  value = aws_vpn_connection.vpn.tunnel1_vgw_inside_address
+}
+
+output "vpn_bgp_local1_ip" {
+  value = aws_vpn_connection.vpn.tunnel1_cgw_inside_address
+}
+
+output "vpn_tunnel2_ip" {
+  value = aws_vpn_connection.vpn.tunnel2_address
+}
+
+output "vpn_tunnel2_psk" {
+  value     = aws_vpn_connection.vpn.tunnel2_preshared_key
+  sensitive = true
+}
+
+output "vpn_bgp_peer2_ip" {
+  value = aws_vpn_connection.vpn.tunnel2_vgw_inside_address
+}
+
+output "vpn_bgp_local2_ip" {
+  value = aws_vpn_connection.vpn.tunnel2_cgw_inside_address
 }
