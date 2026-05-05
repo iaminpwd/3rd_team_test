@@ -1,5 +1,15 @@
+# scripts/vpn_bgp_setup.ps1 
 $ErrorActionPreference = "Stop"
 
+Write-Host "0. 필수 Windows 기능(Routing, RemoteAccess) 설치 검증" -ForegroundColor Cyan
+$feature = Get-WindowsFeature -Name RemoteAccess, Routing
+if ($feature.InstallState -contains "Available" -or $feature.InstallState -contains "Removed") {
+    Write-Host "필수 기능이 누락되어 설치를 진행합니다. (수 분 소요 가능)"
+    Install-WindowsFeature -Name RemoteAccess, Routing -IncludeManagementTools -ErrorAction Stop
+    Write-Host "기능 설치 완료."
+} else {
+    Write-Host "필수 기능이 이미 설치되어 있습니다."
+}
 Write-Host "1. 서비스 종속성 복구 및 RRAS 강제 초기화" -ForegroundColor Cyan
 
 # 1-1. RasMan이 죽는 근본 원인: 종속 서비스(Telephony, SSTP) 강제 활성화

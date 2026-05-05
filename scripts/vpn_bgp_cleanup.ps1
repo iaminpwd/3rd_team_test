@@ -1,3 +1,4 @@
+# scripts/vpn_bgp_cleanup.ps1
 Write-Host "1. BGP 정책 및 라우팅 설정 초기화"
 Get-BgpRoutingPolicy -ErrorAction SilentlyContinue | Remove-BgpRoutingPolicy -Force -ErrorAction SilentlyContinue
 Get-BgpCustomRoute -ErrorAction SilentlyContinue | Remove-BgpCustomRoute -Force -ErrorAction SilentlyContinue
