@@ -19,23 +19,6 @@ provider "aws" {
 }
 
 # ---------------------------------------------------------
-# 1. 보안 데이터 및 설정 (SSM Parameter Store)
-# ---------------------------------------------------------
-data "aws_ssm_parameter" "tunnel1_psk" {
-  name            = "/vpn/home/tunnel1_psk"
-  with_decryption = true
-}
-
-data "aws_ssm_parameter" "tunnel2_psk" {
-  name            = "/vpn/home/tunnel2_psk"
-  with_decryption = true
-}
-
-data "aws_ssm_parameter" "cgw_public_ip" {
-  name = "/vpn/home/cgw_public_ip"
-}
-
-# ---------------------------------------------------------
 # 2. Networking 모듈 호출
 # ---------------------------------------------------------
 module "networking" {
@@ -95,43 +78,3 @@ resource "aws_instance" "test_ec2" {
   tags = { Name = "Test-EC2-Target" }
 }
 
-# --------------------------------------------------------- 
-# 4. SSM Hybrid Activation (기존과 동일)
-# ---------------------------------------------------------
-resource "aws_iam_role" "ssm_hybrid_role" {
-  name = "SSM-Hybrid-Windows-Role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
-      Principal = { Service = "ssm.amazonaws.com" }
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "ssm_hybrid_attach" {
-  role       = aws_iam_role.ssm_hybrid_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-
-resource "aws_ssm_activation" "windows_onprem" {
-  name               = "windows-home-server-activation"
-  iam_role           = aws_iam_role.ssm_hybrid_role.name
-  registration_limit = 5
-  depends_on         = [aws_iam_role_policy_attachment.ssm_hybrid_attach]
-}
-
-resource "aws_ssm_parameter" "activation_id" {
-  name        = "/vpn/home/ssm_activation_id"
-  type        = "String"
-  value       = aws_ssm_activation.windows_onprem.id
-  overwrite   = true 
-}
-
-resource "aws_ssm_parameter" "activation_code" {
-  name        = "/vpn/home/ssm_activation_code"
-  type        = "SecureString"
-  value       = aws_ssm_activation.windows_onprem.activation_code
-  overwrite   = true
-}

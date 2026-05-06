@@ -1,0 +1,705 @@
+
+# FILE: ./.github/workflows/destroy.yml
+name: destroy
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: terraform-deploy
+  cancel-in-progress: false
+
+jobs:
+  terraform-destroy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v3
+
+      - name: Terraform 설치
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+          terraform_wrapper: false
+
+      - name: AWS 자격 증명 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      - name: Windows Server 내부 설정 찌꺼기 초기화 (SSM)
+        continue-on-error: true  # 초기화 실패가 인프라 삭제 자체를 막지 않도록 설정
+        shell: bash
+        run: |
+          chmod +x ./scripts/cleanup_vpn.sh
+          ./scripts/cleanup_vpn.sh
+
+      - name: Terraform 초기화 및 삭제
+        run: |
+          terraform init
+          terraform destroy -auto-approve
+# FILE: ./outputs.tf
+output "ssm_activation_id" { value = aws_ssm_activation.windows_onprem.id }
+
+output "ssm_activation_code" { 
+  value     = aws_ssm_activation.windows_onprem.activation_code
+  sensitive = true 
+}
+
+# ---------------------------------------------------------
+# 모듈 아웃풋 릴레이 (쉼표 제거 및 멀티라인 적용)
+# ---------------------------------------------------------
+output "vpn_tunnel1_ip" { value = module.networking.tunnel1_ip }
+
+output "vpn_tunnel1_psk" { 
+  value     = module.networking.tunnel1_psk
+  sensitive = true 
+}
+
+output "vpn_bgp_peer1_ip"  { value = module.networking.bgp_peer1_ip }
+output "vpn_bgp_local1_ip" { value = module.networking.bgp_local1_ip }
+
+output "vpn_tunnel2_ip" { value = module.networking.tunnel2_ip }
+
+output "vpn_tunnel2_psk" { 
+  value     = module.networking.tunnel2_psk
+  sensitive = true 
+}
+
+output "vpn_bgp_peer2_ip"  { value = module.networking.bgp_peer2_ip }
+output "vpn_bgp_local2_ip" { value = module.networking.bgp_local2_ip }
+# FILE: ./variables.tf
+variable "aws_region" {
+  description = "AWS 리전"
+  type        = string
+  default     = "ap-northeast-2"
+}
+
+variable "aws_vpc_cidr" {
+  description = "AWS VPC의 CIDR 대역"
+  type        = string
+  default     = "10.1.0.0/16"
+}
+
+variable "onprem_vpc_cidr" {
+  description = "온프레미스(홈 랩)의 CIDR 대역"
+  type        = string
+  default     = "192.168.0.0/24"
+}
+
+variable "aws_asn" {
+  description = "AWS Transit Gateway의 BGP ASN"
+  type        = number
+  default     = 64512
+}
+
+variable "onprem_asn" {
+  description = "온프레미스(홈 랩)의 BGP ASN"
+  type        = number
+  default     = 65000
+}
+
+# FILE: ./scripts/cleanup_vpn.sh
+#!/bin/bash
+# scripts/cleanup_vpn.sh
+
+# 온라인 상태인 인스턴스 ID 추출
+INSTANCE_ID=$(aws ssm describe-instance-information \
+  --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" \
+  --output text | grep -oE '(i-|mi-)[a-f0-9]+' | head -n 1)
+
+if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ] && [ "$INSTANCE_ID" != "null" ]; then
+  echo "✅ 온프레미스 서버($INSTANCE_ID)를 발견했습니다. 초기화 명령을 전송합니다."
+  
+  # Cleanup 파워쉘 스크립트 로드 및 인코딩
+  B64_SCRIPT=$(cat ./scripts/vpn_bgp_cleanup.ps1 | base64 -w 0)
+  EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
+  
+  # 비동기 명령 전송 (Fire and Forget)
+  COMMAND_ID=$(aws ssm send-command \
+    --document-name "AWS-RunPowerShellScript" \
+    --targets "Key=InstanceIds,Values=$INSTANCE_ID" \
+    --parameters "commands=[\"$EXEC_CMD\"]" \
+    --query "Command.CommandId" \
+    --output text)
+    
+  echo "🚀 스크립트 전송 완료 (Command ID: $COMMAND_ID)"
+  echo "윈도우 서버가 백그라운드에서 초기화를 진행하는 동안 다음 단계를 진행합니다."
+  
+  # SSM 인스턴스 등록 해제
+  aws ssm deregister-managed-instance --instance-id "$INSTANCE_ID"
+  echo "✅ AWS SSM 인스턴스($INSTANCE_ID) 등록 해제 완료."
+
+else
+  echo "ℹ️ 온라인 상태인 서버를 찾을 수 없어 내부 초기화를 건너뜁니다."
+fi
+# FILE: ./data.tf
+# ---------------------------------------------------------
+# 보안 데이터 및 설정 (SSM Parameter Store)
+# ---------------------------------------------------------
+data "aws_ssm_parameter" "tunnel1_psk" {
+  name            = "/vpn/home/tunnel1_psk"
+  with_decryption = true
+}
+
+data "aws_ssm_parameter" "tunnel2_psk" {
+  name            = "/vpn/home/tunnel2_psk"
+  with_decryption = true
+}
+
+data "aws_ssm_parameter" "cgw_public_ip" {
+  name = "/vpn/home/cgw_public_ip"
+}
+# FILE: ./main.tf
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+
+  backend "s3" {
+    bucket         = "my-terraform-state-bucket-test140234"
+    key            = "dr-project/terraform.tfstate"
+    region         = "ap-northeast-2"
+    encrypt        = true
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+# ---------------------------------------------------------
+# 2. Networking 모듈 호출
+# ---------------------------------------------------------
+module "networking" {
+  source = "./modules/networking"
+
+  # 기본 변수 전달
+  aws_region      = var.aws_region
+  aws_vpc_cidr    = var.aws_vpc_cidr
+  onprem_vpc_cidr = var.onprem_vpc_cidr
+  aws_asn         = var.aws_asn
+  onprem_asn      = var.onprem_asn
+
+  # 데이터 소스에서 읽어온 민감 정보 주입
+  cgw_public_ip   = data.aws_ssm_parameter.cgw_public_ip.value
+  tunnel1_psk     = data.aws_ssm_parameter.tunnel1_psk.value
+  tunnel2_psk     = data.aws_ssm_parameter.tunnel2_psk.value
+}
+
+# ---------------------------------------------------------
+# 3. 테스트 자원 (Security Group + EC2)
+# ---------------------------------------------------------
+resource "aws_security_group" "ping_sg" {
+  name        = "allow_icmp_from_home"
+  description = "Allow ICMP Ping from On-Premise"
+  vpc_id      = module.networking.vpc_id # 모듈 아웃풋 참조
+
+  ingress {
+    from_port   = -1
+    to_port     = -1
+    protocol    = "icmp"
+    cidr_blocks = [var.onprem_vpc_cidr]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = { Name = "SG-Allow-Home-Ping" }
+}
+
+data "aws_ami" "amazon_linux_2023" {
+  most_recent = true
+  owners      = ["amazon"]
+  filter {
+    name   = "name"
+    values = ["al2023-ami-2023.*-x86_64"]
+  }
+}
+
+resource "aws_instance" "test_ec2" {
+  ami                    = data.aws_ami.amazon_linux_2023.id
+  instance_type          = "t3.micro"
+  subnet_id              = module.networking.subnet_id # 모듈 아웃풋 참조
+  vpc_security_group_ids = [aws_security_group.ping_sg.id]
+  tags = { Name = "Test-EC2-Target" }
+}
+
+
+# FILE: ./.github/workflows/deploy.yml
+name: apply
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy-infra-and-configure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v3
+
+      - name: Terraform 설치
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+          terraform_wrapper: false
+
+      - name: AWS 자격 증명 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      - name: Terraform 초기화 및 배포
+        run: |
+          terraform init -reconfigure
+          terraform apply -auto-approve
+
+      - name: "[통합] 인스턴스 인식 및 설정 스크립트 전송"
+        shell: bash
+        env:
+          # 스크립트에서 사용할 환경 변수들을 정의합니다.
+          AWS_VPC_CIDR: "10.1.0.0/16"
+          ONPREM_VPC_CIDR: "192.168.0.0/24"
+        run: |
+          # Terraform Output을 환경 변수로 추출 (-chdir 옵션 삭제)
+          export TUNNEL1_IP=$(terraform output -raw vpn_tunnel1_ip)
+          export TUNNEL1_PSK=$(terraform output -raw vpn_tunnel1_psk)
+          export BGP_PEER1_IP=$(terraform output -raw vpn_bgp_peer1_ip)
+          export BGP_LOCAL1_IP=$(terraform output -raw vpn_bgp_local1_ip)
+          export TUNNEL2_IP=$(terraform output -raw vpn_tunnel2_ip)
+          export TUNNEL2_PSK=$(terraform output -raw vpn_tunnel2_psk)
+          export BGP_PEER2_IP=$(terraform output -raw vpn_bgp_peer2_ip)
+          export BGP_LOCAL2_IP=$(terraform output -raw vpn_bgp_local2_ip)
+
+          # 분리된 스크립트 실행
+          chmod +x ./scripts/setup_vpn.sh
+          ./scripts/setup_vpn.sh
+# FILE: ./scripts/vpn_bgp_cleanup.ps1
+# scripts/vpn_bgp_cleanup.ps1
+Write-Host "1. BGP 정책 및 라우팅 설정 초기화"
+Get-BgpRoutingPolicy -ErrorAction SilentlyContinue | Remove-BgpRoutingPolicy -Force -ErrorAction SilentlyContinue
+Get-BgpCustomRoute -ErrorAction SilentlyContinue | Remove-BgpCustomRoute -Force -ErrorAction SilentlyContinue
+
+Write-Host "2. BGP 피어(Peer) 및 라우터 제거"
+$peers = @("AWS-TGW-Peer1", "AWS-TGW-Peer2")
+foreach ($p in $peers) {
+    Remove-BgpPeer -Name $p -Force -ErrorAction SilentlyContinue
+}
+Remove-BgpRouter -Force -ErrorAction SilentlyContinue
+
+Write-Host "3. VPN Site-to-Site 인터페이스 제거"
+$tunnels = @("AWS-TGW-Tunnel1", "AWS-TGW-Tunnel2")
+foreach ($t in $tunnels) {
+    Remove-VpnS2SInterface -Name $t -Force -ErrorAction SilentlyContinue
+}
+Write-Host "4. 라우팅 서비스 재시작하여 초기화 상태 반영"
+Restart-Service RemoteAccess -ErrorAction SilentlyContinue
+
+# ===== [추가된 핵심 부분] =====
+Write-Host "5. RRAS 엔진 구성 완전 초기화 (현업 표준 선언적 초기화)"
+Uninstall-RemoteAccess -Force -ErrorAction SilentlyContinue
+# ==============================
+
+Write-Host "✅ 윈도우 서버 내부의 하이브리드 클라우드(VPN/BGP) 설정이 모두 초기화되었습니다."
+# FILE: ./ssm_hybrid.tf
+# --------------------------------------------------------- 
+# SSM Hybrid Activation
+# ---------------------------------------------------------
+resource "aws_iam_role" "ssm_hybrid_role" {
+  name = "SSM-Hybrid-Windows-Role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "ssm.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ssm_hybrid_attach" {
+  role       = aws_iam_role.ssm_hybrid_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_ssm_activation" "windows_onprem" {
+  name               = "windows-home-server-activation"
+  iam_role           = aws_iam_role.ssm_hybrid_role.name
+  registration_limit = 5
+  depends_on         = [aws_iam_role_policy_attachment.ssm_hybrid_attach]
+}
+
+resource "aws_ssm_parameter" "activation_id" {
+  name      = "/vpn/home/ssm_activation_id"
+  type      = "String"
+  value     = aws_ssm_activation.windows_onprem.id
+  overwrite = true 
+}
+
+resource "aws_ssm_parameter" "activation_code" {
+  name      = "/vpn/home/ssm_activation_code"
+  type      = "SecureString"
+  value     = aws_ssm_activation.windows_onprem.activation_code
+  overwrite = true
+}
+# FILE: ./modules/networking/vpc_tgw_vpn.tf
+# ---------------------------------------------------------
+# VPC 및 기본 네트워크 구성
+# ---------------------------------------------------------
+resource "aws_vpc" "aws_vpc" {
+  cidr_block           = var.aws_vpc_cidr
+  enable_dns_hostnames = true
+  tags = { Name = "VPC-A-AWS-Cloud" }
+}
+
+resource "aws_subnet" "aws_subnet" {
+  vpc_id            = aws_vpc.aws_vpc.id
+  cidr_block        = cidrsubnet(var.aws_vpc_cidr, 8, 1)
+  availability_zone = "${var.aws_region}a"
+  tags = { Name = "Subnet-A-AWS" }
+}
+
+resource "aws_route_table" "aws_rt" {
+  vpc_id = aws_vpc.aws_vpc.id
+  tags = { Name = "RT-A-AWS" }
+}
+
+resource "aws_route_table_association" "aws_rt_assoc" {
+  subnet_id      = aws_subnet.aws_subnet.id
+  route_table_id = aws_route_table.aws_rt.id
+}
+
+# ---------------------------------------------------------
+# 하이브리드 커넥티비티 (TGW + CGW + VPN)
+# ---------------------------------------------------------
+resource "aws_ec2_transit_gateway" "tgw" {
+  amazon_side_asn                 = var.aws_asn
+  auto_accept_shared_attachments  = "enable"
+  default_route_table_association = "enable"
+  default_route_table_propagation = "enable" 
+  tags = { Name = "TGW-Main" }
+}
+
+resource "aws_ec2_transit_gateway_vpc_attachment" "tgw_attach_vpc_a" {
+  subnet_ids         = [aws_subnet.aws_subnet.id]
+  transit_gateway_id = aws_ec2_transit_gateway.tgw.id
+  vpc_id             = aws_vpc.aws_vpc.id
+  tags = { Name = "TGW-Attach-VPC-A" }
+}
+
+resource "aws_route" "aws_to_onprem" {
+  route_table_id         = aws_route_table.aws_rt.id
+  destination_cidr_block = var.onprem_vpc_cidr
+  transit_gateway_id     = aws_ec2_transit_gateway.tgw.id
+  depends_on             = [aws_ec2_transit_gateway_vpc_attachment.tgw_attach_vpc_a]
+}
+
+resource "aws_customer_gateway" "cgw" {
+  bgp_asn    = var.onprem_asn
+  ip_address = var.cgw_public_ip 
+  type       = "ipsec.1"
+  tags = { Name = "CGW-Home-Windows-Server" }
+}
+
+resource "aws_vpn_connection" "vpn" {
+  customer_gateway_id = aws_customer_gateway.cgw.id
+  transit_gateway_id  = aws_ec2_transit_gateway.tgw.id
+  type                = aws_customer_gateway.cgw.type
+  
+  static_routes_only  = false 
+
+  tunnel1_preshared_key = var.tunnel1_psk
+  tunnel1_inside_cidr   = "169.254.254.124/30" 
+  
+  tunnel2_preshared_key = var.tunnel2_psk
+  tunnel2_inside_cidr   = "169.254.254.128/30"
+  
+  # [추가됨] 명시적 의존성 주입으로 순서 꼬임 및 유령 ID 참조 방지
+  depends_on = [
+    aws_customer_gateway.cgw,
+    aws_ec2_transit_gateway.tgw
+  ]
+
+  tags = { Name = "VPN-TGW-to-Home" }
+}
+# FILE: ./scripts/setup_vpn.sh
+#!/bin/bash
+# scripts/setup_vpn.sh
+
+set -e # 에러 발생 시 즉시 중단
+
+echo "1. AWS SSM에서 Online 상태의 인스턴스를 찾는 중..."
+INSTANCE_ID=""
+
+for i in {1..15}; do
+  # AWS CLI 페이징 버그 방지를 위해 grep 사용
+  RAW_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text | grep -o 'mi-[0-9a-f]*' | head -n 1)
+  
+  if [ -n "$RAW_ID" ]; then
+    INSTANCE_ID=$RAW_ID
+    echo "✅ 인스턴스 인식 성공: $INSTANCE_ID"
+    break
+  fi
+  echo "⏳ 대기 중 ($i/15)... 20초 후 다시 시도합니다."
+  sleep 20
+done
+
+if [ -z "$INSTANCE_ID" ]; then
+  echo "❌ 오류: 5분을 기다렸으나 Online 상태의 노드를 찾지 못했습니다."
+  exit 1
+fi
+
+# 2. 파워쉘 스크립트 조립 (환경 변수로부터 값을 주입받음)
+cat <<EOF > final_script.ps1
+\$AwsVpcCidr = "$AWS_VPC_CIDR"
+\$OnpremVpcCidr = "$ONPREM_VPC_CIDR"
+\$Tunnel1Ip = "$TUNNEL1_IP"
+\$Tunnel1Psk = "$TUNNEL1_PSK"
+\$BgpPeer1Ip = "$BGP_PEER1_IP"
+\$BgpLocal1Ip = "$BGP_LOCAL1_IP"
+\$Tunnel2Ip = "$TUNNEL2_IP"
+\$Tunnel2Psk = "$TUNNEL2_PSK"
+\$BgpPeer2Ip = "$BGP_PEER2_IP"
+\$BgpLocal2Ip = "$BGP_LOCAL2_IP"
+EOF
+
+# 메인 셋업 로직 결합
+cat ./scripts/vpn_bgp_setup.ps1 >> final_script.ps1
+
+B64_SCRIPT=$(cat final_script.ps1 | base64 -w 0)
+EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
+
+# 3. SSM 명령 전송
+echo "2. 스크립트 전송 중..."
+COMMAND_ID=$(aws ssm send-command \
+  --document-name "AWS-RunPowerShellScript" \
+  --targets "Key=InstanceIds,Values=$INSTANCE_ID" \
+  --parameters "commands=[\"$EXEC_CMD\"]" \
+  --timeout-seconds 600 \
+  --query "Command.CommandId" \
+  --output text)
+
+echo "명령 전송 완료. Command ID: $COMMAND_ID"
+echo "⏳ 윈도우 RRAS 엔진 구성 및 BGP 세션 확립 대기 중 (최대 10분)..."
+
+# 4. 롱폴링(Long-Polling) 대기 로직
+ATTEMPTS=0
+MAX_ATTEMPTS=60
+
+while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+  STATUS=$(aws ssm list-command-invocations \
+    --command-id $COMMAND_ID \
+    --details \
+    --query "CommandInvocations[0].Status" \
+    --output text)
+  
+  echo "Current Status: $STATUS ($ATTEMPTS/$MAX_ATTEMPTS)"
+  
+  if [ "$STATUS" == "Success" ]; then
+    echo "✅ 모든 설정이 성공적으로 완료되었습니다!"
+    exit 0
+  elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "Cancelled" ] || [ "$STATUS" == "TimedOut" ]; then
+    echo "❌ 명령 실행 실패! (SSM 콘솔을 확인하세요)"
+    exit 1
+  fi
+  
+  sleep 10
+  ATTEMPTS=$((ATTEMPTS + 1)) # 안전한 산술 연산
+done
+
+echo "❌ 대기 시간 초과!"
+exit 1
+# FILE: ./modules/networking/outputs.tf
+output "vpc_id" { value = aws_vpc.aws_vpc.id }
+output "subnet_id" { value = aws_subnet.aws_subnet.id }
+
+output "tunnel1_ip" { value = aws_vpn_connection.vpn.tunnel1_address }
+
+# [수정됨] 쉼표를 제거하고 줄바꿈으로 변경
+output "tunnel1_psk" { 
+  value     = aws_vpn_connection.vpn.tunnel1_preshared_key
+  sensitive = true 
+}
+
+output "bgp_peer1_ip" { value = aws_vpn_connection.vpn.tunnel1_vgw_inside_address }
+output "bgp_local1_ip" { value = aws_vpn_connection.vpn.tunnel1_cgw_inside_address }
+
+output "tunnel2_ip" { value = aws_vpn_connection.vpn.tunnel2_address }
+
+# [수정됨] 쉼표를 제거하고 줄바꿈으로 변경
+output "tunnel2_psk" { 
+  value     = aws_vpn_connection.vpn.tunnel2_preshared_key
+  sensitive = true 
+}
+
+output "bgp_peer2_ip" { value = aws_vpn_connection.vpn.tunnel2_vgw_inside_address }
+output "bgp_local2_ip" { value = aws_vpn_connection.vpn.tunnel2_cgw_inside_address }
+# FILE: ./scripts/vpn_bgp_setup.ps1
+# =================================================================
+# scripts/vpn_bgp_setup.ps1 (Ghost 어댑터 문제 해결 최종본)
+# =================================================================
+$ErrorActionPreference = "Stop"
+
+# 0. 필수 기능 및 방화벽 설정
+Write-Host "0. 필수 기능 및 방화벽 설정 중..." -ForegroundColor Cyan
+Install-WindowsFeature -Name RemoteAccess, Routing, DirectAccess-VPN -IncludeManagementTools -ErrorAction SilentlyContinue
+
+$fwRules = @(
+    @{ Name="Allow-IPsec-IKE-UDP500"; Port="500"; Protocol="UDP" },
+    @{ Name="Allow-IPsec-NATT-UDP4500"; Port="4500"; Protocol="UDP" },
+    @{ Name="Allow-BGP-TCP179"; Port="179"; Protocol="TCP" }
+)
+foreach ($rule in $fwRules) {
+    try {
+        if (-not (Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction Stop)) {
+            New-NetFirewallRule -DisplayName $rule.Name -Direction Inbound -Action Allow -Protocol $rule.Protocol -LocalPort $rule.Port -ErrorAction Stop
+        }
+    } catch {}
+}
+
+# 1. RRAS 엔진 초기화 및 완벽 재건축
+Write-Host "1. RRAS 엔진 무조건 철거 후 재건축 중..." -ForegroundColor Cyan
+
+try { Uninstall-RemoteAccess -Force -ErrorAction Stop } catch {}
+Start-Sleep -Seconds 5
+
+Install-RemoteAccess -VpnType VpnS2S -ErrorAction Stop
+
+$regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
+Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force
+
+Write-Host "라우팅 서비스 안전 재시작 중..." -ForegroundColor Cyan
+try { Stop-Service RemoteAccess -Force -ErrorAction Stop } catch {}
+Start-Sleep -Seconds 2
+try { Start-Service RemoteAccess -ErrorAction Stop } catch {}
+
+Write-Host "라우팅 서비스 엔진이 완전히 켜질 때까지 대기 중..." -ForegroundColor Yellow
+$svcRetry = 0
+while ((Get-Service RemoteAccess).Status -ne 'Running' -and $svcRetry -lt 30) {
+    Start-Sleep -Seconds 1
+    $svcRetry++
+}
+if ((Get-Service RemoteAccess).Status -ne 'Running') {
+    throw "라우팅 서비스 시작 시간 초과!"
+}
+Write-Host "▶ 라우팅 엔진 가동 완료!" -ForegroundColor Green
+
+# 2. VPN 인터페이스 및 라우팅 구성 (순서 교정 완료)
+Write-Host "2. VPN 인터페이스 및 경로 구성 중..." -ForegroundColor Cyan
+$tunnels = @(
+    @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; Metric="10"; LocalIP=$BgpLocal1Ip; PeerIP=$BgpPeer1Ip },
+    @{ Name="AWS-TGW-Tunnel2"; Dest=$Tunnel2Ip; Psk=$Tunnel2Psk; Metric="50"; LocalIP=$BgpLocal2Ip; PeerIP=$BgpPeer2Ip }
+)
+
+foreach ($t in $tunnels) {
+    Write-Host "[$($t.Name)] 인터페이스 생성 중..."
+    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)" -Protocol IKEv2 -ErrorAction Stop
+    
+    # [핵심] IP를 넣기 전에 터널을 먼저 연결하여 유령 어댑터를 OS에 실체화시킵니다.
+    Write-Host "[$($t.Name)] 어댑터 활성화를 위한 터널 강제 연결 트리거..." -ForegroundColor Yellow
+    try { Connect-VpnS2SInterface -Name $t.Name -ErrorAction Stop } catch {}
+    
+    # 어댑터가 OS에 완전히 등록될 때까지 충분히 대기합니다. (매우 중요)
+    Start-Sleep -Seconds 5
+
+    Write-Host "[$($t.Name)] 활성화된 어댑터에 BGP용 로컬 IP 바인딩 중..."
+    try {
+        Get-NetIPAddress -InterfaceAlias $t.Name -AddressFamily IPv4 -ErrorAction Stop | Where-Object { $_.IPAddress -ne $t.LocalIP } | Remove-NetIPAddress -Confirm:$false -ErrorAction Stop
+    } catch {}
+    
+    # 이제 어댑터가 존재하므로 Element not found 에러가 발생하지 않습니다.
+    try { New-NetIPAddress -InterfaceAlias $t.Name -IPAddress $t.LocalIP -PrefixLength 30 -AddressFamily IPv4 -ErrorAction Stop } catch {}
+    
+    # BGP 목적지(Peer IP) 라우팅 삽입
+    try { New-NetRoute -DestinationPrefix "$($t.PeerIP)/32" -InterfaceAlias $t.Name -ErrorAction Stop } catch {}
+}
+
+# 3. BGP 라우터 및 Peer 구성
+Write-Host "3. BGP 설정 중..." -ForegroundColor Cyan
+$myIp = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null }).IPv4Address.IPAddress | Select-Object -First 1
+
+try {
+    Add-BgpRouter -BgpIdentifier $myIp -LocalASN 65000 -ErrorAction Stop
+    Write-Host "▶ BGP 라우터 생성 완료!" -ForegroundColor Green
+} catch {
+    Set-BgpRouter -BgpIdentifier $myIp -LocalASN 65000 -Force -ErrorAction Stop
+}
+
+$peers = @(
+    @{ Name="AWS-TGW-Peer1"; Local=$BgpLocal1Ip; Peer=$BgpPeer1Ip },
+    @{ Name="AWS-TGW-Peer2"; Local=$BgpLocal2Ip; Peer=$BgpPeer2Ip }
+)
+foreach ($p in $peers) {
+    try { Add-BgpPeer -Name $p.Name -LocalIPAddress $p.Local -PeerIPAddress $p.Peer -PeerASN 64512 -ErrorAction Stop } catch {}
+    try { Start-BgpPeer -Name $p.Name -ErrorAction Stop } catch {}
+}
+
+# 4. BGP 경로 광고
+Write-Host "4. BGP 경로 광고 중..." -ForegroundColor Cyan
+try { Get-BgpCustomRoute -ErrorAction Stop | Remove-BgpCustomRoute -Force -ErrorAction Stop } catch {}
+try { Add-BgpCustomRoute -Network "192.168.0.0/24" -ErrorAction Stop } catch {}
+
+# 5. 최종 BGP 세션 확립을 위한 BGP Peer 리프레시
+Write-Host "5. 최종 BGP 세션 확립을 위한 BGP Peer 리프레시..." -ForegroundColor Cyan
+foreach ($p in $peers) {
+    try { Stop-BgpPeer -Name $p.Name -Force -ErrorAction Stop } catch {}
+    try { Start-BgpPeer -Name $p.Name -ErrorAction Stop } catch {}
+}
+
+Write-Host "✅ 모든 설정 완료!" -ForegroundColor Green
+# FILE: ./modules/networking/variables.tf
+# 파일 위치: modules/networking/variables.tf
+
+variable "aws_region" {
+  description = "AWS 리전"
+  type        = string
+}
+
+variable "aws_vpc_cidr" {
+  description = "AWS VPC의 CIDR 대역"
+  type        = string
+}
+
+variable "onprem_vpc_cidr" {
+  description = "온프레미스(홈 랩)의 CIDR 대역"
+  type        = string
+}
+
+variable "aws_asn" {
+  description = "AWS Transit Gateway의 BGP ASN"
+  type        = number
+}
+
+variable "onprem_asn" {
+  description = "온프레미스(홈 랩)의 BGP ASN"
+  type        = number
+}
+
+# --- 아래는 SSM에서 읽어와 루트가 넘겨줄 보안 데이터 ---
+variable "cgw_public_ip" {
+  description = "CGW 퍼블릭 IP"
+  type        = string
+}
+
+variable "tunnel1_psk" {
+  description = "VPN Tunnel 1 PSK"
+  type        = string
+  sensitive   = true
+}
+
+variable "tunnel2_psk" {
+  description = "VPN Tunnel 2 PSK"
+  type        = string
+  sensitive   = true
+}
