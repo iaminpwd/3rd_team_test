@@ -1,5 +1,5 @@
 # =================================================================
-# scripts/vpn_bgp_setup.ps1 (서비스 락 방어 및 멱등성 완전체)
+# scripts/vpn_bgp_setup.ps1 (서비스 락 및 BGP 중복 방어 완전체)
 # =================================================================
 $ErrorActionPreference = "Stop"
 
@@ -31,7 +31,7 @@ Install-RemoteAccess -VpnType VpnS2S -ErrorAction SilentlyContinue
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
 Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force
 
-# [핵심 방어 로직] Restart-Service 대신 명시적 제어 및 예외 처리
+# 라우팅 서비스 안전 재시작
 Write-Host "라우팅 서비스 안전 재시작 중..." -ForegroundColor Cyan
 try { Stop-Service RemoteAccess -Force -ErrorAction SilentlyContinue } catch {}
 Start-Sleep -Seconds 2
@@ -49,10 +49,8 @@ foreach ($t in $tunnels) {
     # 인터페이스 생성
     Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)" -Protocol IKEv2 -ErrorAction SilentlyContinue
     
-    # [핵심 방어 로직 추가] 윈도우가 멋대로 할당한 쓰레기 IPv4(169.254.0.x 등) 강제 청소
+    # 윈도우가 멋대로 할당한 쓰레기 IPv4(169.254.0.x 등) 강제 청소
     Start-Sleep -Seconds 3 
-    
-    # ★ 수정된 부분: -AddressFamily IPv4 추가 ★
     Get-NetIPAddress -InterfaceAlias $t.Name -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -ne $t.LocalIP } | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
     
     # BGP용 IP 및 경로 강제 할당
@@ -65,7 +63,12 @@ Write-Host "3. BGP 설정 중..." -ForegroundColor Cyan
 $myIp = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null }).IPv4Address.IPAddress | Select-Object -First 1
 Write-Host "발견된 서버 IP(BGP Identifier): $myIp"
 
-Add-BgpRouter -BgpIdentifier $myIp -LocalASN 65000 -Force
+# [핵심 방어 로직 추가] 라우터가 이미 존재하면 Set으로 덮어쓰고, 없으면 Add로 생성합니다.
+if (-not (Get-BgpRouter -ErrorAction SilentlyContinue)) {
+    Add-BgpRouter -BgpIdentifier $myIp -LocalASN 65000 -ErrorAction SilentlyContinue
+} else {
+    Set-BgpRouter -BgpIdentifier $myIp -LocalASN 65000 -Force -ErrorAction SilentlyContinue
+}
 
 $peers = @(
     @{ Name="AWS-TGW-Peer1"; Local=$BgpLocal1Ip; Peer=$BgpPeer1Ip },
@@ -82,7 +85,7 @@ Write-Host "4. BGP 경로 광고 중..." -ForegroundColor Cyan
 try { Get-BgpCustomRoute -ErrorAction Stop | Remove-BgpCustomRoute -Force -ErrorAction Stop } catch {}
 Add-BgpCustomRoute -Network "192.168.0.0/24" -ErrorAction SilentlyContinue
 
-# 5. 최종 BGP 세션 확립을 위한 BGP Peer 리프레시 (이전 리뷰 반영)
+# 5. 최종 BGP 세션 확립을 위한 BGP Peer 리프레시
 Write-Host "5. 최종 BGP 세션 확립을 위한 BGP Peer 리프레시..." -ForegroundColor Cyan
 foreach ($p in $peers) {
     Stop-BgpPeer -Name $p.Name -Force -ErrorAction SilentlyContinue
