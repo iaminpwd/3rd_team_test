@@ -3,10 +3,6 @@ name: apply
 on:
   workflow_dispatch:
 
-concurrency:
-  group: terraform-deploy
-  cancel-in-progress: false
-
 jobs:
   deploy-infra-and-configure:
     runs-on: ubuntu-latest
@@ -34,88 +30,22 @@ jobs:
           terraform apply -auto-approve
 
       - name: "[통합] 인스턴스 인식 및 설정 스크립트 전송"
+        shell: bash
+        env:
+          # 스크립트에서 사용할 환경 변수들을 정의합니다.
+          AWS_VPC_CIDR: "10.1.0.0/16"
+          ONPREM_VPC_CIDR: "192.168.0.0/24"
         run: |
-          # 1. 인스턴스가 Online이 될 때까지 최대 5분(15회) 대기
-          echo "AWS SSM에서 Online 상태의 인스턴스를 찾는 중..."
-          INSTANCE_ID=""
-          
-          for i in {1..15}; do
-            # [수정됨 핵심 로직] AWS CLI의 페이징 None 버그를 원천 차단하기 위해 grep 정규식 사용
-            RAW_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text | grep -o 'mi-[0-9a-f]*' | head -n 1)
-            
-            # RAW_ID에 값이 제대로 담겼을 때만 통과
-            if [ -n "$RAW_ID" ]; then
-              INSTANCE_ID=$RAW_ID
-              echo "✅ 인스턴스 인식 성공: $INSTANCE_ID"
-              break
-            fi
-            echo "⏳ 대기 중 ($i/15)... 20초 후 다시 시도합니다."
-            sleep 20
-          done
+          # Terraform Output을 환경 변수로 추출
+          export TUNNEL1_IP=$(terraform -chdir=./terraform output -raw vpn_tunnel1_ip)
+          export TUNNEL1_PSK=$(terraform -chdir=./terraform output -raw vpn_tunnel1_psk)
+          export BGP_PEER1_IP=$(terraform -chdir=./terraform output -raw vpn_bgp_peer1_ip)
+          export BGP_LOCAL1_IP=$(terraform -chdir=./terraform output -raw vpn_bgp_local1_ip)
+          export TUNNEL2_IP=$(terraform -chdir=./terraform output -raw vpn_tunnel2_ip)
+          export TUNNEL2_PSK=$(terraform -chdir=./terraform output -raw vpn_tunnel2_psk)
+          export BGP_PEER2_IP=$(terraform -chdir=./terraform output -raw vpn_bgp_peer2_ip)
+          export BGP_LOCAL2_IP=$(terraform -chdir=./terraform output -raw vpn_bgp_local2_ip)
 
-          if [ -z "$INSTANCE_ID" ]; then
-            echo "❌ 오류: 5분을 기다렸으나 Online 상태의 노드를 찾지 못했습니다."
-            exit 1
-          fi
-
-          # 2. 동일한 Bash 세션 안에서 즉시 스크립트 생성
-          cat <<EOF > final_script.ps1
-          \$AwsVpcCidr = "10.1.0.0/16"
-          \$OnpremVpcCidr = "192.168.0.0/24"
-          \$Tunnel1Ip = "$(terraform -chdir=./terraform output -raw vpn_tunnel1_ip | tr -d '\r\n')"
-          \$Tunnel1Psk = "$(terraform -chdir=./terraform output -raw vpn_tunnel1_psk | tr -d '\r\n')"
-          \$BgpPeer1Ip = "$(terraform -chdir=./terraform output -raw vpn_bgp_peer1_ip | tr -d '\r\n')"
-          \$BgpLocal1Ip = "$(terraform -chdir=./terraform output -raw vpn_bgp_local1_ip | tr -d '\r\n')"
-          \$Tunnel2Ip = "$(terraform -chdir=./terraform output -raw vpn_tunnel2_ip | tr -d '\r\n')"
-          \$Tunnel2Psk = "$(terraform -chdir=./terraform output -raw vpn_tunnel2_psk | tr -d '\r\n')"
-          \$BgpPeer2Ip = "$(terraform -chdir=./terraform output -raw vpn_bgp_peer2_ip | tr -d '\r\n')"
-          \$BgpLocal2Ip = "$(terraform -chdir=./terraform output -raw vpn_bgp_local2_ip | tr -d '\r\n')"
-          EOF
-          
-          cat ./scripts/vpn_bgp_setup.ps1 >> final_script.ps1
-          
-          B64_SCRIPT=$(cat final_script.ps1 | base64 -w 0)
-          EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
-          
-          # 3. InstanceIds 타겟팅 전송
-          COMMAND_ID=$(aws ssm send-command \
-            --document-name "AWS-RunPowerShellScript" \
-            --targets "Key=InstanceIds,Values=$INSTANCE_ID" \
-            --parameters "commands=[\"$EXEC_CMD\"]" \
-            --timeout-seconds 600 \
-            --query "Command.CommandId" \
-            --output text)
-            
-          echo "명령 전송 완료. Command ID: $COMMAND_ID"
-          echo "⏳ 윈도우 RRAS 엔진 구성 및 BGP 세션 확립을 대기합니다. (최대 10분 소요)"
-          
-          # [수정됨] 현업 롱폴링(Long-Polling) 대기 로직 적용
-          ATTEMPTS=0
-          MAX_ATTEMPTS=60
-          
-          while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
-            STATUS=$(aws ssm list-command-invocations \
-              --command-id $COMMAND_ID \
-              --details \
-              --query "CommandInvocations[0].Status" \
-              --output text)
-            
-            echo "Current Status: $STATUS ($ATTEMPTS/$MAX_ATTEMPTS)"
-            
-            if [ "$STATUS" == "Success" ]; then
-              echo "✅ 명령 실행 성공!"
-              break
-            elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "Cancelled" ] || [ "$STATUS" == "TimedOut" ]; then
-              echo "❌ 명령 실행 실패!"
-              exit 1
-            fi
-            
-            sleep 10
-            # [범인 검거 및 수정] GitHub Actions(set -e)에서 튕기지 않는 안전한 덧셈 문법
-            ATTEMPTS=$((ATTEMPTS + 1))
-          done
-          
-          if [ $ATTEMPTS -eq $MAX_ATTEMPTS ]; then
-             echo "❌ 깃허브 액션 대기 시간 초과!"
-             exit 1
-          fi
+          # 분리된 스크립트 실행
+          chmod +x ./scripts/setup_vpn.sh
+          ./scripts/setup_vpn.sh
