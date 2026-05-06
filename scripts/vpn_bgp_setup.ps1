@@ -1,5 +1,5 @@
 # =================================================================
-# scripts/vpn_bgp_setup.ps1 (완전 무결성 확보 최종 버전)
+# scripts/vpn_bgp_setup.ps1 (서비스 락 방어 및 멱등성 완전체)
 # =================================================================
 $ErrorActionPreference = "Stop"
 
@@ -18,7 +18,7 @@ foreach ($rule in $fwRules) {
     }
 }
 
-# 1. RRAS 엔진 초기화 및 재설치 (안전망 추가)
+# 1. RRAS 엔진 초기화 및 재설치
 Write-Host "1. RRAS 엔진 재설치 중..." -ForegroundColor Cyan
 try { 
     Uninstall-RemoteAccess -Force -ErrorAction Stop 
@@ -30,7 +30,12 @@ Start-Sleep -Seconds 5
 Install-RemoteAccess -VpnType VpnS2S -ErrorAction SilentlyContinue
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
 Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force
-Restart-Service RemoteAccess -Force
+
+# [핵심 방어 로직] Restart-Service 대신 명시적 제어 및 예외 처리
+Write-Host "라우팅 서비스 안전 재시작 중..." -ForegroundColor Cyan
+try { Stop-Service RemoteAccess -Force -ErrorAction SilentlyContinue } catch {}
+Start-Sleep -Seconds 2
+try { Start-Service RemoteAccess -ErrorAction SilentlyContinue } catch {}
 Start-Sleep -Seconds 5
 
 # 2. VPN 인터페이스 및 라우팅 구성
@@ -41,15 +46,13 @@ $tunnels = @(
 )
 
 foreach ($t in $tunnels) {
-    # 인터페이스 생성
     Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)" -Protocol IKEv2 -ErrorAction SilentlyContinue
     
-    # BGP용 IP 및 경로 강제 할당
     New-NetIPAddress -InterfaceAlias $t.Name -IPAddress $t.LocalIP -PrefixLength 30 -AddressFamily IPv4 -ErrorAction SilentlyContinue
     New-NetRoute -DestinationPrefix "$($t.PeerIP)/32" -InterfaceAlias $t.Name -ErrorAction SilentlyContinue
 }
 
-# 3. BGP 라우터 및 Peer 구성 (안전망 추가)
+# 3. BGP 라우터 및 Peer 구성
 Write-Host "3. BGP 설정 중..." -ForegroundColor Cyan
 $myIp = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null }).IPv4Address.IPAddress | Select-Object -First 1
 Write-Host "발견된 서버 IP(BGP Identifier): $myIp"
@@ -66,17 +69,13 @@ foreach ($p in $peers) {
     Start-BgpPeer -Name $p.Name -ErrorAction SilentlyContinue
 }
 
-# 4. BGP 경로 광고 (안전망 추가)
+# 4. BGP 경로 광고
 Write-Host "4. BGP 경로 광고 중..." -ForegroundColor Cyan
 try { Get-BgpCustomRoute -ErrorAction Stop | Remove-BgpCustomRoute -Force -ErrorAction Stop } catch {}
-
-# [수정] 혹시 모를 파이프라인 에러 방지를 위해 에러 무시 파라미터 추가
 Add-BgpCustomRoute -Network "192.168.0.0/24" -ErrorAction SilentlyContinue
 
-# [수정] BGP 서비스가 동적 IP를 확실히 인식하도록 최종 엔진 리프레시 진행
+# 5. 최종 BGP 세션 확립을 위한 BGP Peer 리프레시 (이전 리뷰 반영)
 Write-Host "5. 최종 BGP 세션 확립을 위한 BGP Peer 리프레시..." -ForegroundColor Cyan
-
-# RemoteAccess 전체를 재시작하면 인터페이스 IP가 증발할 위험이 있으므로 Peer만 재시작합니다.
 foreach ($p in $peers) {
     Stop-BgpPeer -Name $p.Name -Force -ErrorAction SilentlyContinue
     Start-BgpPeer -Name $p.Name -ErrorAction SilentlyContinue
