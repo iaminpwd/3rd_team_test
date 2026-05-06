@@ -35,7 +35,6 @@ jobs:
           ./scripts/cleanup_vpn.sh
 
       - name: Terraform 초기화 및 삭제
-        working-directory: ./terraform
         run: |
           terraform init
           terraform destroy -auto-approve
