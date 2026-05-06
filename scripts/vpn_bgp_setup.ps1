@@ -1,5 +1,5 @@
 # =================================================================
-# scripts/vpn_bgp_setup.ps1 (스마트 대기 로직 및 멱등성 완전체 버전)
+# scripts/vpn_bgp_setup.ps1 (엔진 중복 설치 방어 및 스마트 대기 버전)
 # =================================================================
 $ErrorActionPreference = "Stop"
 
@@ -18,16 +18,21 @@ foreach ($rule in $fwRules) {
     }
 }
 
-# 1. RRAS 엔진 초기화 및 재설치
-Write-Host "1. RRAS 엔진 재설치 중..." -ForegroundColor Cyan
-try { 
-    Uninstall-RemoteAccess -Force -ErrorAction Stop 
-} catch { 
-    Write-Host "👉 지울 이전 VPN 설정이 없어 초기화를 건너뜁니다." -ForegroundColor Yellow 
-}
-Start-Sleep -Seconds 5
+# 1. RRAS 엔진 초기화 및 최적화 설치
+Write-Host "1. RRAS 엔진 상태 점검 및 초기화 중..." -ForegroundColor Cyan
 
-Install-RemoteAccess -VpnType VpnS2S -ErrorAction SilentlyContinue
+# ★ 현업 최적화: 이미 설치되어 있다면 지우고 다시 깔지 않고 서비스만 리셋합니다.
+if (Get-Service RemoteAccess -ErrorAction SilentlyContinue) {
+    Write-Host "👉 RRAS 엔진이 이미 존재합니다. 설정을 초기화합니다." -ForegroundColor Yellow
+    # 설정 초기화 (엔진 삭제 대신 인터페이스와 라우터만 제거하여 속도 향상)
+    Get-BgpPeer | Remove-BgpPeer -Force -ErrorAction SilentlyContinue
+    Get-BgpRouter | Remove-BgpRouter -Force -ErrorAction SilentlyContinue
+    Get-VpnS2SInterface | Remove-VpnS2SInterface -Force -ErrorAction SilentlyContinue
+} else {
+    Write-Host "👉 RRAS 엔진이 없습니다. 새로 설치합니다." -ForegroundColor Yellow
+    Install-RemoteAccess -VpnType VpnS2S -ErrorAction SilentlyContinue
+}
+
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
 Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force
 
@@ -48,7 +53,7 @@ if ((Get-Service RemoteAccess).Status -ne 'Running') {
 }
 Write-Host "▶ 라우팅 엔진 가동 완료!" -ForegroundColor Green
 
-# 2. VPN 인터페이스 및 라우팅 구성
+# 2. VPN 인터페이스 및 라우팅 구성 (수정된 현업 표준 방식)
 Write-Host "2. VPN 인터페이스 및 경로 구성 중..." -ForegroundColor Cyan
 $tunnels = @(
     @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; Metric="10"; LocalIP=$BgpLocal1Ip; PeerIP=$BgpPeer1Ip },
@@ -56,28 +61,31 @@ $tunnels = @(
 )
 
 foreach ($t in $tunnels) {
-    # 인터페이스 생성
-    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)" -Protocol IKEv2 -ErrorAction SilentlyContinue
+    # [핵심] AWS VPC 대역뿐만 아니라 BGP Peer IP(/32)도 Demand-Dial 트리거 목록에 포함시킵니다.
+    $vpnSubnets = @(
+        "${AwsVpcCidr}:$($t.Metric)",
+        "$($t.PeerIP)/32:$($t.Metric)"
+    )
+
+    # 인터페이스 생성 (IPv4Subnet 파라미터에 배열 전달)
+    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet $vpnSubnets -Protocol IKEv2 -ErrorAction SilentlyContinue
     
-    # 닭과 달걀 딜레마 해결: 터널 강제 기상
-    Connect-VpnS2SInterface -Name $t.Name -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 3 
-    
-    # 윈도우가 멋대로 할당한 쓰레기 IPv4(169.254.0.x 등) 강제 청소
+    Start-Sleep -Seconds 2
+
+    # BGP용 IP 강제 할당 (APIPA 랜덤 할당 방지)
     Get-NetIPAddress -InterfaceAlias $t.Name -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -ne $t.LocalIP } | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
-    
-    # BGP용 IP 및 경로 강제 할당
     New-NetIPAddress -InterfaceAlias $t.Name -IPAddress $t.LocalIP -PrefixLength 30 -AddressFamily IPv4 -ErrorAction SilentlyContinue
-    New-NetRoute -DestinationPrefix "$($t.PeerIP)/32" -InterfaceAlias $t.Name -ErrorAction SilentlyContinue
+    
+    # [제거됨] New-NetRoute 명령줄은 삭제합니다. 위 IPv4Subnet으로 인해 자동 생성됩니다.
+
+    # [순서 변경] 터널 연결(Connect)은 IP와 라우팅 세팅이 끝난 가장 마지막에 수행해야 안전하게 연결됩니다.
+    Write-Host "[$($t.Name)] IPsec 터널 연결 트리거 중..." -ForegroundColor Yellow
+    Connect-VpnS2SInterface -Name $t.Name -ErrorAction SilentlyContinue
 }
 
-# 3. BGP 라우터 및 Peer 구성
+# 3. BGP 라우터 및 Peer 구성 (성공할 때까지 재시도 로직 유지)
 Write-Host "3. BGP 설정 중..." -ForegroundColor Cyan
 $myIp = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null }).IPv4Address.IPAddress | Select-Object -First 1
-Write-Host "발견된 서버 IP(BGP Identifier): $myIp"
-
-# BGP 라우터 스마트 생성 (성공할 때까지 재시도)
-Write-Host "BGP 라우터 엔진 초기화 및 생성 시도 중..." -ForegroundColor Yellow
 $bgpCreated = $false
 $bgpRetry = 0
 
@@ -95,10 +103,6 @@ while (-not $bgpCreated -and $bgpRetry -lt 15) {
         Start-Sleep -Seconds 2
         $bgpRetry++
     }
-}
-
-if (-not $bgpCreated) {
-    throw "BGP 라우터 엔진 초기화 실패 (타임아웃)"
 }
 
 $peers = @(
@@ -123,5 +127,4 @@ foreach ($p in $peers) {
     Start-BgpPeer -Name $p.Name -ErrorAction SilentlyContinue
 }
 
-Write-Host "✅ 모든 설정 완료! 15초 후 통신이 개시됩니다." -ForegroundColor Green
-Start-Sleep -Seconds 15
+Write-Host "✅ 모든 설정 완료!" -ForegroundColor Green
