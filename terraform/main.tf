@@ -7,7 +7,7 @@ terraform {
   }
 
   backend "s3" {
-    bucket         = "my-terraform-state-bucket-skdmal2213"
+    bucket         = "my-terraform-state-bucket-test1400234"
     key            = "dr-project/terraform.tfstate"
     region         = "ap-northeast-2"
     encrypt        = true
