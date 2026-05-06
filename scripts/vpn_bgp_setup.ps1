@@ -24,10 +24,10 @@ Write-Host "1. RRAS 엔진 상태 점검 및 초기화 중..." -ForegroundColor 
 # ★ 현업 최적화: 이미 설치되어 있다면 지우고 다시 깔지 않고 서비스만 리셋합니다.
 if (Get-Service RemoteAccess -ErrorAction SilentlyContinue) {
     Write-Host "👉 RRAS 엔진이 이미 존재합니다. 설정을 초기화합니다." -ForegroundColor Yellow
-    # 설정 초기화 (엔진 삭제 대신 인터페이스와 라우터만 제거하여 속도 향상)
-    Get-BgpPeer | Remove-BgpPeer -Force -ErrorAction SilentlyContinue
-    Get-BgpRouter | Remove-BgpRouter -Force -ErrorAction SilentlyContinue
-    Get-VpnS2SInterface | Remove-VpnS2SInterface -Force -ErrorAction SilentlyContinue
+    # [수정됨] Get 명령어 자체에서 발생하는 "Not Found" 에러를 try-catch로 완벽하게 흡수합니다.
+    try { Get-BgpPeer -ErrorAction Stop | Remove-BgpPeer -Force -ErrorAction Stop } catch {}
+    try { Get-BgpRouter -ErrorAction Stop | Remove-BgpRouter -Force -ErrorAction Stop } catch {}
+    try { Get-VpnS2SInterface -ErrorAction Stop | Remove-VpnS2SInterface -Force -ErrorAction Stop } catch {}
 } else {
     Write-Host "👉 RRAS 엔진이 없습니다. 새로 설치합니다." -ForegroundColor Yellow
     Install-RemoteAccess -VpnType VpnS2S -ErrorAction SilentlyContinue
