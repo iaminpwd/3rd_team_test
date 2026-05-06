@@ -35,90 +35,32 @@ data "aws_ssm_parameter" "cgw_public_ip" {
   name = "/vpn/home/cgw_public_ip"
 }
 
-
 # ---------------------------------------------------------
-# 2. VPC 및 기본 네트워크 구성
+# 2. Networking 모듈 호출
 # ---------------------------------------------------------
-resource "aws_vpc" "aws_vpc" {
-  cidr_block           = var.aws_vpc_cidr
-  enable_dns_hostnames = true
-  tags = { Name = "VPC-A-AWS-Cloud" }
-}
+module "networking" {
+  source = "./modules/networking"
 
-resource "aws_subnet" "aws_subnet" {
-  vpc_id            = aws_vpc.aws_vpc.id
-  cidr_block        = cidrsubnet(var.aws_vpc_cidr, 8, 1)
-  availability_zone = "${var.aws_region}a"
-  tags = { Name = "Subnet-A-AWS" }
-}
+  # 기본 변수 전달
+  aws_region      = var.aws_region
+  aws_vpc_cidr    = var.aws_vpc_cidr
+  onprem_vpc_cidr = var.onprem_vpc_cidr
+  aws_asn         = var.aws_asn
+  onprem_asn      = var.onprem_asn
 
-resource "aws_route_table" "aws_rt" {
-  vpc_id = aws_vpc.aws_vpc.id
-  tags = { Name = "RT-A-AWS" }
-}
-
-resource "aws_route_table_association" "aws_rt_assoc" {
-  subnet_id      = aws_subnet.aws_subnet.id
-  route_table_id = aws_route_table.aws_rt.id
+  # 데이터 소스에서 읽어온 민감 정보 주입
+  cgw_public_ip   = data.aws_ssm_parameter.cgw_public_ip.value
+  tunnel1_psk     = data.aws_ssm_parameter.tunnel1_psk.value
+  tunnel2_psk     = data.aws_ssm_parameter.tunnel2_psk.value
 }
 
 # ---------------------------------------------------------
-# 3. 하이브리드 커넥티비티 (TGW + CGW + VPN)
-# ---------------------------------------------------------
-resource "aws_ec2_transit_gateway" "tgw" {
-  amazon_side_asn                 = var.aws_asn
-  auto_accept_shared_attachments  = "enable"
-  default_route_table_association = "enable"
-  default_route_table_propagation = "enable" 
-  tags = { Name = "TGW-Main" }
-}
-
-resource "aws_ec2_transit_gateway_vpc_attachment" "tgw_attach_vpc_a" {
-  subnet_ids         = [aws_subnet.aws_subnet.id]
-  transit_gateway_id = aws_ec2_transit_gateway.tgw.id
-  vpc_id             = aws_vpc.aws_vpc.id
-  tags = { Name = "TGW-Attach-VPC-A" }
-}
-
-resource "aws_route" "aws_to_onprem" {
-  route_table_id         = aws_route_table.aws_rt.id
-  destination_cidr_block = var.onprem_vpc_cidr
-  transit_gateway_id     = aws_ec2_transit_gateway.tgw.id
-  depends_on             = [aws_ec2_transit_gateway_vpc_attachment.tgw_attach_vpc_a]
-}
-
-resource "aws_customer_gateway" "cgw" {
-  bgp_asn    = var.onprem_asn
-  ip_address = data.aws_ssm_parameter.cgw_public_ip.value 
-  type       = "ipsec.1"
-  tags = { Name = "CGW-Home-Windows-Server" }
-}
-
-resource "aws_vpn_connection" "vpn" {
-  customer_gateway_id = aws_customer_gateway.cgw.id
-  transit_gateway_id  = aws_ec2_transit_gateway.tgw.id
-  type                = aws_customer_gateway.cgw.type
-  
-  static_routes_only  = false 
-
-  tunnel1_preshared_key = data.aws_ssm_parameter.tunnel1_psk.value
-  # [변경] 윈도우 OS의 APIPA(169.254) 차단 정책을 피하기 위해 사설 대역 지정
-  tunnel1_inside_cidr   = "169.254.254.124/30" 
-  
-  tunnel2_preshared_key = data.aws_ssm_parameter.tunnel2_psk.value
-  # [변경] 윈도우 OS의 APIPA(169.254) 차단 정책을 피하기 위해 사설 대역 지정
-  tunnel2_inside_cidr   = "169.254.254.128/30"
-
-  tags = { Name = "VPN-TGW-to-Home" }
-}
-
-# ---------------------------------------------------------
-# 4. 테스트 자원 (Security Group + EC2)
+# 3. 테스트 자원 (Security Group + EC2)
 # ---------------------------------------------------------
 resource "aws_security_group" "ping_sg" {
   name        = "allow_icmp_from_home"
   description = "Allow ICMP Ping from On-Premise"
-  vpc_id      = aws_vpc.aws_vpc.id
+  vpc_id      = module.networking.vpc_id # 모듈 아웃풋 참조
 
   ingress {
     from_port   = -1
@@ -148,13 +90,13 @@ data "aws_ami" "amazon_linux_2023" {
 resource "aws_instance" "test_ec2" {
   ami                    = data.aws_ami.amazon_linux_2023.id
   instance_type          = "t3.micro"
-  subnet_id              = aws_subnet.aws_subnet.id
+  subnet_id              = module.networking.subnet_id # 모듈 아웃풋 참조
   vpc_security_group_ids = [aws_security_group.ping_sg.id]
   tags = { Name = "Test-EC2-Target" }
 }
 
 # --------------------------------------------------------- 
-# 5. SSM Hybrid Activation
+# 4. SSM Hybrid Activation (기존과 동일)
 # ---------------------------------------------------------
 resource "aws_iam_role" "ssm_hybrid_role" {
   name = "SSM-Hybrid-Windows-Role"
@@ -180,14 +122,10 @@ resource "aws_ssm_activation" "windows_onprem" {
   depends_on         = [aws_iam_role_policy_attachment.ssm_hybrid_attach]
 }
 
-# =========================================================
-# 생성된 ID와 Code를 파라미터 스토어에 자동 저장
-# =========================================================
 resource "aws_ssm_parameter" "activation_id" {
   name        = "/vpn/home/ssm_activation_id"
   type        = "String"
   value       = aws_ssm_activation.windows_onprem.id
-  description = "SSM Hybrid Activation ID for On-Prem Windows"
   overwrite   = true 
 }
 
@@ -195,52 +133,5 @@ resource "aws_ssm_parameter" "activation_code" {
   name        = "/vpn/home/ssm_activation_code"
   type        = "SecureString"
   value       = aws_ssm_activation.windows_onprem.activation_code
-  description = "SSM Hybrid Activation Code for On-Prem Windows"
   overwrite   = true
-}
-
-# ---------------------------------------------------------
-# 6. 파이프라인으로 넘겨줄 Outputs
-# ---------------------------------------------------------
-output "ssm_activation_id" {
-  value = aws_ssm_activation.windows_onprem.id
-}
-
-output "ssm_activation_code" {
-  value     = aws_ssm_activation.windows_onprem.activation_code
-  sensitive = true
-}
-
-output "vpn_tunnel1_ip" {
-  value = aws_vpn_connection.vpn.tunnel1_address
-}
-
-output "vpn_tunnel1_psk" {
-  value     = aws_vpn_connection.vpn.tunnel1_preshared_key
-  sensitive = true
-}
-
-output "vpn_bgp_peer1_ip" {
-  value = aws_vpn_connection.vpn.tunnel1_vgw_inside_address
-}
-
-output "vpn_bgp_local1_ip" {
-  value = aws_vpn_connection.vpn.tunnel1_cgw_inside_address
-}
-
-output "vpn_tunnel2_ip" {
-  value = aws_vpn_connection.vpn.tunnel2_address
-}
-
-output "vpn_tunnel2_psk" {
-  value     = aws_vpn_connection.vpn.tunnel2_preshared_key
-  sensitive = true
-}
-
-output "vpn_bgp_peer2_ip" {
-  value = aws_vpn_connection.vpn.tunnel2_vgw_inside_address
-}
-
-output "vpn_bgp_local2_ip" {
-  value = aws_vpn_connection.vpn.tunnel2_cgw_inside_address
 }
