@@ -1,5 +1,5 @@
 # =================================================================
-# scripts/vpn_bgp_setup.ps1 (Try-Catch 절대 방어 적용 최종본)
+# scripts/vpn_bgp_setup.ps1 (엔진 완전 재건축 및 라우팅 우회 최종본)
 # =================================================================
 $ErrorActionPreference = "Stop"
 
@@ -20,18 +20,15 @@ foreach ($rule in $fwRules) {
     } catch {}
 }
 
-# 1. RRAS 엔진 초기화 및 최적화 설치
-Write-Host "1. RRAS 엔진 상태 점검 및 초기화 중..." -ForegroundColor Cyan
+# 1. RRAS 엔진 초기화 및 완벽 재건축 (회원님 원본 방식 복원)
+Write-Host "1. RRAS 엔진 무조건 철거 후 재건축 중..." -ForegroundColor Cyan
 
-if (Get-Service RemoteAccess -ErrorAction SilentlyContinue) {
-    Write-Host "👉 RRAS 엔진이 이미 존재합니다. 설정을 초기화합니다." -ForegroundColor Yellow
-    # [핵심 수정] ErrorActionPreference="Stop" 환경에서는 무조건 try-catch로 덮어야만 생존합니다.
-    try { Remove-BgpRouter -Force -ErrorAction Stop } catch {}
-    try { Get-VpnS2SInterface -ErrorAction Stop | Remove-VpnS2SInterface -Force -ErrorAction Stop } catch {}
-} else {
-    Write-Host "👉 RRAS 엔진이 없습니다. 새로 설치합니다." -ForegroundColor Yellow
-    Install-RemoteAccess -VpnType VpnS2S -ErrorAction SilentlyContinue
-}
+# 찌꺼기가 남아있을 수 있으므로 무조건 철거합니다. (없으면 에러 무시)
+try { Uninstall-RemoteAccess -Force -ErrorAction Stop } catch {}
+Start-Sleep -Seconds 5
+
+# 빈 껍데기가 아닌, 실제 VPN S2S 라우팅 엔진을 구성합니다. (핵심)
+Install-RemoteAccess -VpnType VpnS2S -ErrorAction Stop
 
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
 Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force
@@ -60,20 +57,20 @@ $tunnels = @(
 )
 
 foreach ($t in $tunnels) {
-    # VPC 대역만 할당 (이전 단계에서 검증된 정상 로직 유지)
-    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)" -Protocol IKEv2 -ErrorAction SilentlyContinue
+    # VPC 대역만 할당하여 정상적으로 인터페이스를 생성합니다.
+    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)" -Protocol IKEv2 -ErrorAction Stop
     
     Start-Sleep -Seconds 2
 
-    # BGP용 IP 강제 할당 (에러가 나도 스크립트가 죽지 않도록 방어)
+    # BGP용 로컬 IP 바인딩
     try {
         Get-NetIPAddress -InterfaceAlias $t.Name -AddressFamily IPv4 -ErrorAction Stop | Where-Object { $_.IPAddress -ne $t.LocalIP } | Remove-NetIPAddress -Confirm:$false -ErrorAction Stop
     } catch {}
     
-    try { New-NetIPAddress -InterfaceAlias $t.Name -IPAddress $t.LocalIP -PrefixLength 30 -AddressFamily IPv4 -ErrorAction Stop } catch {}
+    New-NetIPAddress -InterfaceAlias $t.Name -IPAddress $t.LocalIP -PrefixLength 30 -AddressFamily IPv4 -ErrorAction Stop
     
-    # BGP 통신을 위한 라우팅 강제 삽입 (현업 우회 표준 적용)
-    try { New-NetRoute -DestinationPrefix "$($t.PeerIP)/32" -InterfaceAlias $t.Name -ErrorAction Stop } catch {}
+    # BGP 목적지(Peer IP)로 향하는 트래픽을 터널로 밀어 넣습니다.
+    New-NetRoute -DestinationPrefix "$($t.PeerIP)/32" -InterfaceAlias $t.Name -ErrorAction Stop
 
     Write-Host "[$($t.Name)] IPsec 터널 연결 트리거 중..." -ForegroundColor Yellow
     try { Connect-VpnS2SInterface -Name $t.Name -ErrorAction Stop } catch {}
@@ -82,23 +79,12 @@ foreach ($t in $tunnels) {
 # 3. BGP 라우터 및 Peer 구성
 Write-Host "3. BGP 설정 중..." -ForegroundColor Cyan
 $myIp = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null }).IPv4Address.IPAddress | Select-Object -First 1
-$bgpCreated = $false
-$bgpRetry = 0
 
-while (-not $bgpCreated -and $bgpRetry -lt 15) {
-    try {
-        if (-not (Get-BgpRouter -ErrorAction SilentlyContinue)) {
-            Add-BgpRouter -BgpIdentifier $myIp -LocalASN 65000 -ErrorAction Stop
-        } else {
-            Set-BgpRouter -BgpIdentifier $myIp -LocalASN 65000 -Force -ErrorAction Stop
-        }
-        $bgpCreated = $true
-        Write-Host "▶ BGP 라우터 생성 완료!" -ForegroundColor Green
-    } catch {
-        Write-Host "   엔진 준비 중... 다시 시도합니다. ($($bgpRetry + 1)/15)" -ForegroundColor DarkGray
-        Start-Sleep -Seconds 2
-        $bgpRetry++
-    }
+try {
+    Add-BgpRouter -BgpIdentifier $myIp -LocalASN 65000 -ErrorAction Stop
+    Write-Host "▶ BGP 라우터 생성 완료!" -ForegroundColor Green
+} catch {
+    Set-BgpRouter -BgpIdentifier $myIp -LocalASN 65000 -Force -ErrorAction Stop
 }
 
 $peers = @(
@@ -106,7 +92,6 @@ $peers = @(
     @{ Name="AWS-TGW-Peer2"; Local=$BgpLocal2Ip; Peer=$BgpPeer2Ip }
 )
 foreach ($p in $peers) {
-    try { Remove-BgpPeer -Name $p.Name -Force -ErrorAction Stop } catch {}
     try { Add-BgpPeer -Name $p.Name -LocalIPAddress $p.Local -PeerIPAddress $p.Peer -PeerASN 64512 -ErrorAction Stop } catch {}
     try { Start-BgpPeer -Name $p.Name -ErrorAction Stop } catch {}
 }
