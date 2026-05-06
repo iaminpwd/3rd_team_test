@@ -30,7 +30,7 @@ jobs:
       - name: Terraform 초기화 및 배포
         working-directory: ./terraform
         run: |
-          terraform init
+          terraform init -reconfigure
           terraform apply -auto-approve
 
       - name: "[통합] 인스턴스 인식 및 설정 스크립트 전송"
