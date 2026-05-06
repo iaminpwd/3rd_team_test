@@ -78,7 +78,6 @@ jobs:
           EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
           
           # 3. InstanceIds 타겟팅 전송
-          # [수정됨] --timeout-seconds 600 옵션을 추가하고, 기존 aws ssm wait 명령어를 삭제합니다.
           COMMAND_ID=$(aws ssm send-command \
             --document-name "AWS-RunPowerShellScript" \
             --targets "Key=InstanceIds,Values=$INSTANCE_ID" \
@@ -112,7 +111,8 @@ jobs:
             fi
             
             sleep 10
-            ((ATTEMPTS++))
+            # [범인 검거 및 수정] GitHub Actions(set -e)에서 튕기지 않는 안전한 덧셈 문법
+            ATTEMPTS=$((ATTEMPTS + 1))
           done
           
           if [ $ATTEMPTS -eq $MAX_ATTEMPTS ]; then
