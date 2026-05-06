@@ -78,12 +78,44 @@ jobs:
           EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
           
           # 3. InstanceIds 타겟팅 전송
+          # [수정됨] --timeout-seconds 600 옵션을 추가하고, 기존 aws ssm wait 명령어를 삭제합니다.
           COMMAND_ID=$(aws ssm send-command \
             --document-name "AWS-RunPowerShellScript" \
             --targets "Key=InstanceIds,Values=$INSTANCE_ID" \
             --parameters "commands=[\"$EXEC_CMD\"]" \
+            --timeout-seconds 600 \
             --query "Command.CommandId" \
             --output text)
             
           echo "명령 전송 완료. Command ID: $COMMAND_ID"
-          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID"
+          echo "⏳ 윈도우 RRAS 엔진 구성 및 BGP 세션 확립을 대기합니다. (최대 10분 소요)"
+          
+          # [수정됨] 현업 롱폴링(Long-Polling) 대기 로직 적용
+          ATTEMPTS=0
+          MAX_ATTEMPTS=60
+          
+          while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+            STATUS=$(aws ssm list-command-invocations \
+              --command-id $COMMAND_ID \
+              --details \
+              --query "CommandInvocations[0].Status" \
+              --output text)
+            
+            echo "Current Status: $STATUS ($ATTEMPTS/$MAX_ATTEMPTS)"
+            
+            if [ "$STATUS" == "Success" ]; then
+              echo "✅ 명령 실행 성공!"
+              break
+            elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "Cancelled" ] || [ "$STATUS" == "TimedOut" ]; then
+              echo "❌ 명령 실행 실패!"
+              exit 1
+            fi
+            
+            sleep 10
+            ((ATTEMPTS++))
+          done
+          
+          if [ $ATTEMPTS -eq $MAX_ATTEMPTS ]; then
+             echo "❌ 깃허브 액션 대기 시간 초과!"
+             exit 1
+          fi
