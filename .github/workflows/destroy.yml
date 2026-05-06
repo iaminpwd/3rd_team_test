@@ -46,6 +46,9 @@ jobs:
               
             echo "명령 전송 완료. Command ID: $COMMAND_ID"
             aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID"
+            echo "✅ 윈도우 내부 초기화 완료. AWS Fleet Manager에서 서버를 명시적으로 제거합니다."
+            aws ssm deregister-managed-instance --instance-id "$INSTANCE_ID"
+
           else
             echo "온라인 상태인 서버를 찾을 수 없어 내부 초기화를 건너뜁니다."
           fi

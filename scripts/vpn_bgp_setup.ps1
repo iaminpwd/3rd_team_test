@@ -10,10 +10,11 @@ if ($null -ne $feature -and ($feature.InstallState -contains "Available" -or $fe
     Install-WindowsFeature -Name RemoteAccess, Routing, DirectAccess-VPN -IncludeManagementTools -ErrorAction Stop
 }
 
-Write-Host "0-1. Windows 방화벽 IPsec/IKEv2 필수 포트 개방" -ForegroundColor Cyan
+Write-Host "0-1. Windows 방화벽 IPsec/IKEv2 및 BGP 필수 포트 개방" -ForegroundColor Cyan
 $fwRules = @(
     @{ Name="Allow-IPsec-IKE-UDP500"; Port="500"; Protocol="UDP" },
-    @{ Name="Allow-IPsec-NATT-UDP4500"; Port="4500"; Protocol="UDP" }
+    @{ Name="Allow-IPsec-NATT-UDP4500"; Port="4500"; Protocol="UDP" },
+    @{ Name="Allow-BGP-TCP179"; Port="179"; Protocol="TCP" } # BGP 통신 포트 명시적 개방 추가
 )
 foreach ($rule in $fwRules) {
     try {
@@ -70,15 +71,23 @@ foreach ($t in $tunnels) {
     $iface = $null
     try { $iface = Get-VpnS2SInterface -Name $t.Name -ErrorAction Stop } catch {}
     
+    # === [핵심 수정 부분] 비트 연산을 통한 /30 서브넷 주소 동적 계산 ===
+    $ipParts = $t.LocalIP.Split('.')
+    $netOctet = [int]$ipParts[3] -band 252 # 252는 /30 서브넷 마스크의 끝자리
+    $bgpSubnet = "$($ipParts[0]).$($ipParts[1]).$($ipParts[2]).$netOctet/30"
+    
+    $routeArray = @("${AwsVpcCidr}:$($t.Metric)", "${bgpSubnet}:$($t.Metric)")
+    # ====================================================================
+
     if ($null -eq $iface) {
         Write-Host "[$($t.Name)] 생성 중..."
-        Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)" -Protocol IKEv2
+        Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet $routeArray -Protocol IKEv2
     } else {
         Write-Host "[$($t.Name)] 업데이트 중..."
-        Set-VpnS2SInterface -Name $t.Name -Destination $t.Dest -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)"
+        Set-VpnS2SInterface -Name $t.Name -Destination $t.Dest -SharedSecret $t.Psk -IPv4Subnet $routeArray
     }
 
-    # [핵심 수정 부분] 윈도우의 랜덤 APIPA 할당을 방지하기 위해 BGP Local IP를 강제로 인터페이스에 부여합니다.
+    # 윈도우의 랜덤 APIPA 할당을 방지하기 위해 BGP Local IP를 강제로 인터페이스에 부여합니다.
     Write-Host "[$($t.Name)] BGP Local IP($($t.LocalIP)) 강제 바인딩 중..." -ForegroundColor Yellow
     New-NetIPAddress -InterfaceAlias $t.Name -IPAddress $t.LocalIP -PrefixLength 30 -AddressFamily IPv4 -ErrorAction SilentlyContinue
 }
@@ -118,5 +127,12 @@ $net2 = "$($ip.Split('.')[0]).$($ip.Split('.')[1]).$($ip.Split('.')[2]).128/25"
 Add-BgpCustomRoute -Network $net1, $net2 -ErrorAction SilentlyContinue
 Add-BgpRoutingPolicy -Name "DenySplitOnTunnel2" -PolicyType Deny -MatchPrefix $net1, $net2 -ErrorAction SilentlyContinue
 Set-BgpRoutingPolicyForPeer -PeerName "AWS-TGW-Peer2" -PolicyName "DenySplitOnTunnel2" -Direction Egress -Force
+
+# === [핵심 수정 부분] BGP 세션 완벽 확립을 위한 라우팅 서비스 최종 리프레시 ===
+Write-Host "5. 최종 BGP 세션 확립을 위한 라우팅 엔진 리프레시" -ForegroundColor Cyan
+Restart-Service RemoteAccess -Force
+Write-Host "BGP 세션 연결 및 라우팅 전파 대기 중... (15초)"
+Start-Sleep -Seconds 15
+# ==============================================================================
 
 Write-Host "✅ 하이브리드 인프라 구성이 완벽하게 완료되었습니다!" -ForegroundColor Green
