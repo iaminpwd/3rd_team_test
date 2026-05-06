@@ -46,8 +46,16 @@ $tunnels = @(
 )
 
 foreach ($t in $tunnels) {
+    # 인터페이스 생성
     Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)" -Protocol IKEv2 -ErrorAction SilentlyContinue
     
+    # [핵심 방어 로직 추가] 윈도우가 멋대로 할당한 쓰레기 IPv4(169.254.0.x 등) 강제 청소
+    Start-Sleep -Seconds 3 
+    
+    # ★ 수정된 부분: -AddressFamily IPv4 추가 ★
+    Get-NetIPAddress -InterfaceAlias $t.Name -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -ne $t.LocalIP } | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+    
+    # BGP용 IP 및 경로 강제 할당
     New-NetIPAddress -InterfaceAlias $t.Name -IPAddress $t.LocalIP -PrefixLength 30 -AddressFamily IPv4 -ErrorAction SilentlyContinue
     New-NetRoute -DestinationPrefix "$($t.PeerIP)/32" -InterfaceAlias $t.Name -ErrorAction SilentlyContinue
 }
