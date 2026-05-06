@@ -1,5 +1,5 @@
 # =================================================================
-# scripts/vpn_bgp_setup.ps1 (서비스 락 및 BGP 중복 방어 완전체)
+# scripts/vpn_bgp_setup.ps1 (스마트 대기 로직 및 멱등성 완전체 버전)
 # =================================================================
 $ErrorActionPreference = "Stop"
 
@@ -31,12 +31,22 @@ Install-RemoteAccess -VpnType VpnS2S -ErrorAction SilentlyContinue
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
 Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force
 
-# 라우팅 서비스 안전 재시작
+# 라우팅 서비스 안전 재시작 및 스마트 대기(Waiter)
 Write-Host "라우팅 서비스 안전 재시작 중..." -ForegroundColor Cyan
 try { Stop-Service RemoteAccess -Force -ErrorAction SilentlyContinue } catch {}
 Start-Sleep -Seconds 2
 try { Start-Service RemoteAccess -ErrorAction SilentlyContinue } catch {}
-Start-Sleep -Seconds 5
+
+Write-Host "라우팅 서비스 엔진이 완전히 켜질 때까지 대기 중..." -ForegroundColor Yellow
+$svcRetry = 0
+while ((Get-Service RemoteAccess).Status -ne 'Running' -and $svcRetry -lt 30) {
+    Start-Sleep -Seconds 1
+    $svcRetry++
+}
+if ((Get-Service RemoteAccess).Status -ne 'Running') {
+    throw "라우팅 서비스 시작 시간 초과!"
+}
+Write-Host "▶ 라우팅 엔진 가동 완료!" -ForegroundColor Green
 
 # 2. VPN 인터페이스 및 라우팅 구성
 Write-Host "2. VPN 인터페이스 및 경로 구성 중..." -ForegroundColor Cyan
@@ -49,9 +59,11 @@ foreach ($t in $tunnels) {
     # 인터페이스 생성
     Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)" -Protocol IKEv2 -ErrorAction SilentlyContinue
     
+    # 닭과 달걀 딜레마 해결: 터널 강제 기상
     Connect-VpnS2SInterface -Name $t.Name -ErrorAction SilentlyContinue
-    # 윈도우가 멋대로 할당한 쓰레기 IPv4(169.254.0.x 등) 강제 청소
     Start-Sleep -Seconds 3 
+    
+    # 윈도우가 멋대로 할당한 쓰레기 IPv4(169.254.0.x 등) 강제 청소
     Get-NetIPAddress -InterfaceAlias $t.Name -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -ne $t.LocalIP } | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
     
     # BGP용 IP 및 경로 강제 할당
@@ -64,11 +76,29 @@ Write-Host "3. BGP 설정 중..." -ForegroundColor Cyan
 $myIp = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null }).IPv4Address.IPAddress | Select-Object -First 1
 Write-Host "발견된 서버 IP(BGP Identifier): $myIp"
 
-# [핵심 방어 로직 추가] 라우터가 이미 존재하면 Set으로 덮어쓰고, 없으면 Add로 생성합니다.
-if (-not (Get-BgpRouter -ErrorAction SilentlyContinue)) {
-    Add-BgpRouter -BgpIdentifier $myIp -LocalASN 65000 -ErrorAction SilentlyContinue
-} else {
-    Set-BgpRouter -BgpIdentifier $myIp -LocalASN 65000 -Force -ErrorAction SilentlyContinue
+# BGP 라우터 스마트 생성 (성공할 때까지 재시도)
+Write-Host "BGP 라우터 엔진 초기화 및 생성 시도 중..." -ForegroundColor Yellow
+$bgpCreated = $false
+$bgpRetry = 0
+
+while (-not $bgpCreated -and $bgpRetry -lt 15) {
+    try {
+        if (-not (Get-BgpRouter -ErrorAction SilentlyContinue)) {
+            Add-BgpRouter -BgpIdentifier $myIp -LocalASN 65000 -ErrorAction Stop
+        } else {
+            Set-BgpRouter -BgpIdentifier $myIp -LocalASN 65000 -Force -ErrorAction Stop
+        }
+        $bgpCreated = $true
+        Write-Host "▶ BGP 라우터 생성 완료!" -ForegroundColor Green
+    } catch {
+        Write-Host "   엔진 준비 중... 다시 시도합니다. ($($bgpRetry + 1)/15)" -ForegroundColor DarkGray
+        Start-Sleep -Seconds 2
+        $bgpRetry++
+    }
+}
+
+if (-not $bgpCreated) {
+    throw "BGP 라우터 엔진 초기화 실패 (타임아웃)"
 }
 
 $peers = @(
