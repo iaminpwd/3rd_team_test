@@ -35,9 +35,6 @@ data "aws_ssm_parameter" "cgw_public_ip" {
   name = "/vpn/home/cgw_public_ip"
 }
 
-data "aws_ssm_parameter" "windows_password" {
-  name = "/vpn/home/windows_password"
-}
 
 # ---------------------------------------------------------
 # 2. VPC 및 기본 네트워크 구성

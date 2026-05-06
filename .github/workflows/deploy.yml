@@ -1,8 +1,6 @@
-name: Hybrid Cloud DR Provisioning
+name: apply
 
 on:
-  push:
-    branches: [ "main" ]
   workflow_dispatch:
 
 concurrency:
