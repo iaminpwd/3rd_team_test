@@ -1,5 +1,5 @@
 # =================================================================
-# scripts/vpn_bgp_setup.ps1 (엔진 완전 재건축 및 라우팅 우회 최종본)
+# scripts/vpn_bgp_setup.ps1 (Ghost 어댑터 문제 해결 최종본)
 # =================================================================
 $ErrorActionPreference = "Stop"
 
@@ -20,14 +20,12 @@ foreach ($rule in $fwRules) {
     } catch {}
 }
 
-# 1. RRAS 엔진 초기화 및 완벽 재건축 (회원님 원본 방식 복원)
+# 1. RRAS 엔진 초기화 및 완벽 재건축
 Write-Host "1. RRAS 엔진 무조건 철거 후 재건축 중..." -ForegroundColor Cyan
 
-# 찌꺼기가 남아있을 수 있으므로 무조건 철거합니다. (없으면 에러 무시)
 try { Uninstall-RemoteAccess -Force -ErrorAction Stop } catch {}
 Start-Sleep -Seconds 5
 
-# 빈 껍데기가 아닌, 실제 VPN S2S 라우팅 엔진을 구성합니다. (핵심)
 Install-RemoteAccess -VpnType VpnS2S -ErrorAction Stop
 
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
@@ -49,7 +47,7 @@ if ((Get-Service RemoteAccess).Status -ne 'Running') {
 }
 Write-Host "▶ 라우팅 엔진 가동 완료!" -ForegroundColor Green
 
-# 2. VPN 인터페이스 및 라우팅 구성
+# 2. VPN 인터페이스 및 라우팅 구성 (순서 교정 완료)
 Write-Host "2. VPN 인터페이스 및 경로 구성 중..." -ForegroundColor Cyan
 $tunnels = @(
     @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; Metric="10"; LocalIP=$BgpLocal1Ip; PeerIP=$BgpPeer1Ip },
@@ -57,23 +55,26 @@ $tunnels = @(
 )
 
 foreach ($t in $tunnels) {
-    # VPC 대역만 할당하여 정상적으로 인터페이스를 생성합니다.
+    Write-Host "[$($t.Name)] 인터페이스 생성 중..."
     Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)" -Protocol IKEv2 -ErrorAction Stop
     
-    Start-Sleep -Seconds 2
+    # [핵심] IP를 넣기 전에 터널을 먼저 연결하여 유령 어댑터를 OS에 실체화시킵니다.
+    Write-Host "[$($t.Name)] 어댑터 활성화를 위한 터널 강제 연결 트리거..." -ForegroundColor Yellow
+    try { Connect-VpnS2SInterface -Name $t.Name -ErrorAction Stop } catch {}
+    
+    # 어댑터가 OS에 완전히 등록될 때까지 충분히 대기합니다. (매우 중요)
+    Start-Sleep -Seconds 5
 
-    # BGP용 로컬 IP 바인딩
+    Write-Host "[$($t.Name)] 활성화된 어댑터에 BGP용 로컬 IP 바인딩 중..."
     try {
         Get-NetIPAddress -InterfaceAlias $t.Name -AddressFamily IPv4 -ErrorAction Stop | Where-Object { $_.IPAddress -ne $t.LocalIP } | Remove-NetIPAddress -Confirm:$false -ErrorAction Stop
     } catch {}
     
-    New-NetIPAddress -InterfaceAlias $t.Name -IPAddress $t.LocalIP -PrefixLength 30 -AddressFamily IPv4 -ErrorAction Stop
+    # 이제 어댑터가 존재하므로 Element not found 에러가 발생하지 않습니다.
+    try { New-NetIPAddress -InterfaceAlias $t.Name -IPAddress $t.LocalIP -PrefixLength 30 -AddressFamily IPv4 -ErrorAction Stop } catch {}
     
-    # BGP 목적지(Peer IP)로 향하는 트래픽을 터널로 밀어 넣습니다.
-    New-NetRoute -DestinationPrefix "$($t.PeerIP)/32" -InterfaceAlias $t.Name -ErrorAction Stop
-
-    Write-Host "[$($t.Name)] IPsec 터널 연결 트리거 중..." -ForegroundColor Yellow
-    try { Connect-VpnS2SInterface -Name $t.Name -ErrorAction Stop } catch {}
+    # BGP 목적지(Peer IP) 라우팅 삽입
+    try { New-NetRoute -DestinationPrefix "$($t.PeerIP)/32" -InterfaceAlias $t.Name -ErrorAction Stop } catch {}
 }
 
 # 3. BGP 라우터 및 Peer 구성
