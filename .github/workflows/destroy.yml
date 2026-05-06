@@ -28,6 +28,7 @@ jobs:
           aws-region: ap-northeast-2
 
       - name: Windows Server 내부 설정 찌꺼기 초기화 (SSM)
+        continue-on-error: true  # ★ 현업 Best-Effort 적용: 에러가 발생해도 파이프라인을 멈추지 않고 다음 단계로 넘어갑니다.
         run: |
           INSTANCE_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text | grep -oE '(i-|mi-)[a-f0-9]+' | head -n 1)
 
