@@ -49,6 +49,7 @@ foreach ($t in $tunnels) {
     # 인터페이스 생성
     Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)" -Protocol IKEv2 -ErrorAction SilentlyContinue
     
+    Connect-VpnS2SInterface -Name $t.Name -ErrorAction SilentlyContinue
     # 윈도우가 멋대로 할당한 쓰레기 IPv4(169.254.0.x 등) 강제 청소
     Start-Sleep -Seconds 3 
     Get-NetIPAddress -InterfaceAlias $t.Name -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -ne $t.LocalIP } | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
