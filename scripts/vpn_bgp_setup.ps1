@@ -46,8 +46,12 @@ foreach ($t in $tunnels) {
 
 # 3. BGP 라우터 및 Peer 구성
 Write-Host "3. BGP 설정 중..." -ForegroundColor Cyan
-# Identifier를 현재 서버의 실제 IP(192.168.0.45)로 명시적 고정
-$myIp = "192.168.0.45" 
+
+# [개선] Parameter Store를 뒤질 필요 없이, 현재 서버의 메인 LAN IP를 자동으로 찾아 Identifier로 지정합니다.
+$myIp = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null }).IPv4Address.IPAddress | Select-Object -First 1
+Write-Host "발견된 서버 IP(BGP Identifier): $myIp"
+
+# 라우터 추가 (Identifier를 동적으로 할당)
 Add-BgpRouter -BgpIdentifier $myIp -LocalASN 65000 -Force
 
 $peers = @(
@@ -55,7 +59,9 @@ $peers = @(
     @{ Name="AWS-TGW-Peer2"; Local=$BgpLocal2Ip; Peer=$BgpPeer2Ip }
 )
 foreach ($p in $peers) {
-    Add-BgpPeer -Name $p.Name -LocalIPAddress $p.Local -PeerIPAddress $p.Peer -PeerASN 64512 -ErrorAction SilentlyContinue
+    # 기존 피어 설정을 깔끔하게 밀고 다시 잡습니다.
+    Remove-BgpPeer -Name $p.Name -Force -ErrorAction SilentlyContinue
+    Add-BgpPeer -Name $p.Name -LocalIPAddress $p.Local -PeerIPAddress $p.Peer -PeerASN 64512
     Start-BgpPeer -Name $p.Name -ErrorAction SilentlyContinue
 }
 
