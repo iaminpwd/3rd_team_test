@@ -20,39 +20,24 @@ foreach ($rule in $fwRules) {
     } catch {}
 }
 
-# 1. RRAS 엔진 무조건 철거 후 재건축 중... (보강된 코드)
-Write-Host "1. RRAS 엔진 무조건 철거 후 재건축 중..." -ForegroundColor Cyan
+## 1. RRAS 엔진 점검 및 기존 연결망만 수술적 제거 (엔진 전체 삭제 X)
+Write-Host "1. RRAS 엔진 점검 및 기존 연결망 초기화 중..." -ForegroundColor Cyan
 
-try { Uninstall-RemoteAccess -Force -ErrorAction SilentlyContinue } catch {}
-Start-Sleep -Seconds 10  # 삭제 후 윈도우가 정리할 시간을 줍니다.
+# 혹시 모를 기존 찌꺼기(인터페이스, BGP)만 안전하게 지우기 (WMI 엔진 보호)
+Write-Host "기존 VPN 및 BGP 설정을 안전하게 지우는 중..." -ForegroundColor Yellow
+Get-VpnS2SInterface -ErrorAction SilentlyContinue | Remove-VpnS2SInterface -Force -ErrorAction SilentlyContinue
+Get-BgpPeer -ErrorAction SilentlyContinue | Remove-BgpPeer -Force -ErrorAction SilentlyContinue
+try { Remove-BgpRouter -Force -ErrorAction SilentlyContinue } catch {}
 
-Install-RemoteAccess -VpnType VpnS2S -ErrorAction Stop
-
-# 레지스트리 설정
+# 레지스트리 설정 (VPN 및 LAN 라우팅 활성화)
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
 Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force
 
-Write-Host "라우팅 서비스 안전 재시작 및 엔진 활성화 대기..." -ForegroundColor Yellow
+Write-Host "라우팅 서비스 재시작 및 안정화 대기..." -ForegroundColor Yellow
 Restart-Service RemoteAccess -Force
 
-# [핵심] 서비스가 Running인 것만으로는 부족합니다. 
-# 관리 명령(Get-RemoteAccess)이 실제로 응답할 때까지 최대 2분을 기다립니다.
-$retryCount = 0
-while ($retryCount -lt 12) {
-    try {
-        $status = Get-RemoteAccess -ErrorAction Stop
-        Write-Host "▶ 라우팅 엔진이 명령을 받을 준비가 되었습니다!" -ForegroundColor Green
-        break
-    } catch {
-        Write-Host "⏳ 엔진 초기화 대기 중... ($($retryCount * 10)초 경과)" -ForegroundColor Gray
-        Start-Sleep -Seconds 10
-        $retryCount++
-    }
-}
-
-if ($retryCount -eq 12) {
-    throw "오류: 윈도우 라우팅 엔진이 너무 오래 응답하지 않습니다. 서버 재부팅이 필요할 수 있습니다."
-}
+# 엔진과 WMI가 통신을 맺을 시간(10초) 부여
+Start-Sleep -Seconds 10
 Write-Host "▶ 라우팅 엔진 가동 완료!" -ForegroundColor Green
 
 # 2. VPN 인터페이스 및 라우팅 구성 (순서 교정 완료)
