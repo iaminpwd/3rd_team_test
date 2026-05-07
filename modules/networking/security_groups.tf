@@ -31,6 +31,16 @@ resource "aws_vpc_security_group_egress_rule" "bastion_all" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
+#온프레미스 핑테스트
+resource "aws_vpc_security_group_ingress_rule" "bastion_icmp_from_vpn" {
+  security_group_id = aws_security_group.bastion.id
+  description       = "Allow Ping(ICMP) from On-Premises VPN"
+  ip_protocol       = "icmp"
+  from_port         = -1 # ICMP의 모든 타입 허용
+  to_port           = -1
+  cidr_ipv4         = var.vpn_cidr
+}
+
 # ══════════════════════════════════════════════════════
 # Security Group - ALB
 # 인바운드: HTTP(80), HTTPS(443) → 0.0.0.0/0

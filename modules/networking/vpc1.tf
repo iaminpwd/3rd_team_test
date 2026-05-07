@@ -142,6 +142,11 @@ resource "aws_route_table" "public" {
     gateway_id = aws_internet_gateway.main.id
   }
 
+  route {
+    cidr_block         = var.vpn_cidr
+    transit_gateway_id = aws_ec2_transit_gateway.tgw.id
+  }
+
   tags = {
     Name = "${local.name}-rt-public"
   }
@@ -162,6 +167,11 @@ resource "aws_route_table" "private" {
   route {
     cidr_block     = "0.0.0.0/0"
     nat_gateway_id = aws_nat_gateway.main.id
+  }
+  
+  route {
+    cidr_block         = var.vpn_cidr
+    transit_gateway_id = aws_ec2_transit_gateway.tgw.id
   }
 
   tags = {

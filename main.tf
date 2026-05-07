@@ -178,7 +178,3 @@ module "networking" {
 #   domain_name = var.domain_name
 #   aws_alb_dns = var.aws_alb_dns
 # }
-
-# ---------------------------------------------------------
-# 2. Networking 모듈 호출
-# ---------------------------------------------------------
