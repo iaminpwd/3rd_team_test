@@ -132,51 +132,39 @@ resource "aws_nat_gateway" "main" {
 }
 
 # ══════════════════════════════════════════════════════
-# 라우팅 테이블 - 퍼블릭
+# 라우팅 테이블 구성 (기본 라우팅만 포함)
 # ══════════════════════════════════════════════════════
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
-
   route {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.main.id
   }
-
-  route {
-    cidr_block         = var.vpn_cidr
-    transit_gateway_id = aws_ec2_transit_gateway.tgw.id
-  }
-
-  tags = {
-    Name = "${local.name}-rt-public"
-  }
+  tags = { Name = "${local.name}-rt-public" }
 }
 
-resource "aws_route_table_association" "public" {
-  count          = length(aws_subnet.public)
-  subnet_id      = aws_subnet.public[count.index].id
-  route_table_id = aws_route_table.public.id
-}
-
-# ══════════════════════════════════════════════════════
-# 라우팅 테이블 - 프라이빗 (모든 프라이빗 서브넷 → NAT)
-# ══════════════════════════════════════════════════════
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.main.id
-
   route {
     cidr_block     = "0.0.0.0/0"
     nat_gateway_id = aws_nat_gateway.main.id
   }
-  
-  route {
-    cidr_block         = var.vpn_cidr
-    transit_gateway_id = aws_ec2_transit_gateway.tgw.id
-  }
+  tags = { Name = "${local.name}-rt-private" }
+}
 
-  tags = {
-    Name = "${local.name}-rt-private"
-  }
+# ══════════════════════════════════════════════════════
+# 온프레미스행 라우팅 (TGW 경유) - 별도 리소스로 분리하여 에러 방지
+# ══════════════════════════════════════════════════════
+resource "aws_route" "public_to_onprem" {
+  route_table_id         = aws_route_table.public.id
+  destination_cidr_block = var.vpn_cidr
+  transit_gateway_id     = aws_ec2_transit_gateway.tgw.id
+}
+
+resource "aws_route" "private_to_onprem" {
+  route_table_id         = aws_route_table.private.id
+  destination_cidr_block = var.vpn_cidr
+  transit_gateway_id     = aws_ec2_transit_gateway.tgw.id
 }
 
 resource "aws_route_table_association" "private_eks" {
