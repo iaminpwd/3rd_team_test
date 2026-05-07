@@ -20,30 +20,38 @@ foreach ($rule in $fwRules) {
     } catch {}
 }
 
-# 1. RRAS 엔진 초기화 및 완벽 재건축
+# 1. RRAS 엔진 무조건 철거 후 재건축 중... (보강된 코드)
 Write-Host "1. RRAS 엔진 무조건 철거 후 재건축 중..." -ForegroundColor Cyan
 
-try { Uninstall-RemoteAccess -Force -ErrorAction Stop } catch {}
-Start-Sleep -Seconds 5
+try { Uninstall-RemoteAccess -Force -ErrorAction SilentlyContinue } catch {}
+Start-Sleep -Seconds 10  # 삭제 후 윈도우가 정리할 시간을 줍니다.
 
 Install-RemoteAccess -VpnType VpnS2S -ErrorAction Stop
 
+# 레지스트리 설정
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
 Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force
 
-Write-Host "라우팅 서비스 안전 재시작 중..." -ForegroundColor Cyan
-try { Stop-Service RemoteAccess -Force -ErrorAction Stop } catch {}
-Start-Sleep -Seconds 2
-try { Start-Service RemoteAccess -ErrorAction Stop } catch {}
+Write-Host "라우팅 서비스 안전 재시작 및 엔진 활성화 대기..." -ForegroundColor Yellow
+Restart-Service RemoteAccess -Force
 
-Write-Host "라우팅 서비스 엔진이 완전히 켜질 때까지 대기 중..." -ForegroundColor Yellow
-$svcRetry = 0
-while ((Get-Service RemoteAccess).Status -ne 'Running' -and $svcRetry -lt 30) {
-    Start-Sleep -Seconds 1
-    $svcRetry++
+# [핵심] 서비스가 Running인 것만으로는 부족합니다. 
+# 관리 명령(Get-RemoteAccess)이 실제로 응답할 때까지 최대 2분을 기다립니다.
+$retryCount = 0
+while ($retryCount -lt 12) {
+    try {
+        $status = Get-RemoteAccess -ErrorAction Stop
+        Write-Host "▶ 라우팅 엔진이 명령을 받을 준비가 되었습니다!" -ForegroundColor Green
+        break
+    } catch {
+        Write-Host "⏳ 엔진 초기화 대기 중... ($($retryCount * 10)초 경과)" -ForegroundColor Gray
+        Start-Sleep -Seconds 10
+        $retryCount++
+    }
 }
-if ((Get-Service RemoteAccess).Status -ne 'Running') {
-    throw "라우팅 서비스 시작 시간 초과!"
+
+if ($retryCount -eq 12) {
+    throw "오류: 윈도우 라우팅 엔진이 너무 오래 응답하지 않습니다. 서버 재부팅이 필요할 수 있습니다."
 }
 Write-Host "▶ 라우팅 엔진 가동 완료!" -ForegroundColor Green
 
@@ -56,7 +64,8 @@ $tunnels = @(
 
 foreach ($t in $tunnels) {
     Write-Host "[$($t.Name)] 인터페이스 생성 중..."
-    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "${AwsVpcCidr}:$($t.Metric)" -Protocol IKEv2 -ErrorAction Stop
+    # 수정 후 (완벽본)
+    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "0.0.0.0/0:$($t.Metric)" -Protocol IKEv2 -ErrorAction Stop
     
     # [핵심] IP를 넣기 전에 터널을 먼저 연결하여 유령 어댑터를 OS에 실체화시킵니다.
     Write-Host "[$($t.Name)] 어댑터 활성화를 위한 터널 강제 연결 트리거..." -ForegroundColor Yellow
