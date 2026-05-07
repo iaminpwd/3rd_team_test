@@ -43,27 +43,33 @@ try { Get-BgpPeer | Remove-BgpPeer -Force -ErrorAction SilentlyContinue } catch 
 try { Remove-BgpRouter -Force -ErrorAction SilentlyContinue } catch {}
 try { Enable-RemoteAccessRoutingDomain -Custom -PassThru -ErrorAction SilentlyContinue } catch {}
 
-# 2. VPN 인터페이스 구성 (⭐ 핵심: -RoutingMethod BGP 적용)
+# 2. VPN 인터페이스 구성 (현업 표준: Narrow TS 및 Host Route 강제 주입)
 Write-Host "2. VPN 인터페이스 구성 중..." -ForegroundColor Cyan
 $tunnels = @(
-    @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; LocalIP=$BgpLocal1Ip; PeerIP=$BgpPeer1Ip },
-    @{ Name="AWS-TGW-Tunnel2"; Dest=$Tunnel2Ip; Psk=$Tunnel2Psk; LocalIP=$BgpLocal2Ip; PeerIP=$BgpPeer2Ip }
+    @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; LocalIP=$BgpLocal1Ip; PeerIP=$BgpPeer1Ip; Metric="100" },
+    @{ Name="AWS-TGW-Tunnel2"; Dest=$Tunnel2Ip; Psk=$Tunnel2Psk; LocalIP=$BgpLocal2Ip; PeerIP=$BgpPeer2Ip; Metric="150" }
 )
 
 foreach ($t in $tunnels) {
     Write-Host "[$($t.Name)] 생성 중..."
     
-    # ⭐ -IPv4Subnet 파라미터를 완전히 삭제하고 -RoutingMethod BGP를 사용합니다.
-    # 이를 통해 윈도우는 인터넷 경로(0.0.0.0/0)를 납치하지 않고, 오직 BGP로 교환한 경로만 VPN으로 보냅니다.
-    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -Protocol IKEv2 -RoutingMethod BGP -ErrorAction Stop
+    # ⭐ [핵심 수정] 문제가 된 파라미터를 지우고, 원래의 -IPv4Subnet 방식으로 돌아갑니다.
+    # 단, 인터넷(0.0.0.0/0)이나 APIPA(169.254.x.x) 대신, AWS 피어(Peer)의 단일 IP(/32)를 명시적으로 주입합니다.
+    # 이렇게 하면 파워쉘 버전 오류나 169.254 거부 에러를 완벽히 우회하면서 BGP 터널을 뚫을 수 있습니다.
+    $awsTargetSubnets = @(
+        "${AwsVpcCidr}:$($t.Metric)",
+        "$($t.PeerIP)/32:$($t.Metric)"
+    )
+    
+    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet $awsTargetSubnets -Protocol IKEv2 -ErrorAction Stop
     
     try { Connect-VpnS2SInterface -Name $t.Name -ErrorAction Stop } catch {}
     Start-Sleep -Seconds 5
 
     try { New-NetIPAddress -InterfaceAlias $t.Name -IPAddress $t.LocalIP -PrefixLength 30 -AddressFamily IPv4 -ErrorAction Stop } catch {}
     
-    # BGP 통신을 위한 Peer 직접 경로 (Static Host Route) 추가
-    try { New-NetRoute -DestinationPrefix "$($t.PeerIP)/32" -InterfaceAlias $t.Name -ErrorAction Stop } catch {}
+    # BGP 통신을 위한 라우팅 테이블 수동 밀어넣기
+    try { New-NetRoute -DestinationPrefix "$($t.PeerIP)/32" -InterfaceAlias $t.Name -RouteMetric $t.Metric -ErrorAction Stop } catch {}
 }
 
 # 3. BGP 라우터 및 Peer 구성
