@@ -32,13 +32,20 @@ resource "aws_vpc_security_group_egress_rule" "bastion_all" {
 }
 
 #온프레미스 핑테스트
+# FILE: ./modules/networking/security_groups.tf
+# 온프레미스 핑테스트 (아래 블록을 통째로 교체하세요)
 resource "aws_vpc_security_group_ingress_rule" "bastion_icmp_from_vpn" {
+  for_each = toset([
+    var.vpn_cidr,        # 192.168.0.0/24 (온프레미스 원본 대역)
+    "169.254.254.0/24"   # VPN 터널 가상 대역 (윈도우가 가끔 이걸 출발지로 씁니다)
+  ])
+
   security_group_id = aws_security_group.bastion.id
-  description       = "Allow Ping(ICMP) from On-Premises VPN"
+  description       = "Allow Ping(ICMP) from On-Premises VPN & Tunnel"
   ip_protocol       = "icmp"
-  from_port         = -1 # ICMP의 모든 타입 허용
+  from_port         = -1
   to_port           = -1
-  cidr_ipv4         = var.vpn_cidr
+  cidr_ipv4         = each.value
 }
 
 # ══════════════════════════════════════════════════════

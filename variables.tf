@@ -95,7 +95,7 @@ variable "allowed_ssh_cidrs" {
 variable "vpn_cidr" {
   description = "온프레미스 VPN CIDR (DevOps SG 인바운드 허용)"
   type        = string
-  default     = "192.168.0.0/16"
+  default     = "192.168.0.0/24"
 }
 
 # ─── VPC2 (WorkSpaces VDI) ────────────────────────────
