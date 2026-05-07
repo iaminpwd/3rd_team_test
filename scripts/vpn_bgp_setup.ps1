@@ -1,5 +1,5 @@
 # =================================================================
-# scripts/vpn_bgp_setup.ps1 (가장 확실한 엔진 재건축 성공본)
+# scripts/vpn_bgp_setup.ps1 (충돌 코드 제거 및 최적화 완료본)
 # =================================================================
 $ErrorActionPreference = "Stop"
 
@@ -20,23 +20,21 @@ foreach ($rule in $fwRules) {
     } catch {}
 }
 
-# 1. RRAS 엔진 무조건 철거 후 재건축 중... (핑 성공했던 가장 확실한 방식)
+# 1. RRAS 엔진 무조건 철거 후 재건축 중...
 Write-Host "1. RRAS 엔진 무조건 철거 후 재건축 중..." -ForegroundColor Cyan
 
 try { Uninstall-RemoteAccess -Force -ErrorAction SilentlyContinue } catch {}
-Start-Sleep -Seconds 10  # 삭제 후 윈도우가 정리할 시간을 줍니다.
+Start-Sleep -Seconds 10  
 
 Install-RemoteAccess -VpnType VpnS2S -ErrorAction Stop
 
-# 레지스트리 설정
+# 레지스트리 설정 (LAN 라우팅 활성화)
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
 Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force
 
 Write-Host "라우팅 서비스 안전 재시작 및 엔진 활성화 대기..." -ForegroundColor Yellow
 Restart-Service RemoteAccess -Force
 
-# [핵심] 서비스가 Running인 것만으로는 부족합니다. 
-# 관리 명령(Get-RemoteAccess)이 실제로 응답할 때까지 최대 2분을 기다립니다.
 $retryCount = 0
 while ($retryCount -lt 12) {
     try {
@@ -53,9 +51,14 @@ while ($retryCount -lt 12) {
 if ($retryCount -eq 12) {
     throw "오류: 윈도우 라우팅 엔진이 너무 오래 응답하지 않습니다. 서버 재부팅이 필요할 수 있습니다."
 }
+
+# [핵심 보완] BGP 라우팅(LAN Routing) 기능을 명시적으로 깨워줍니다.
+Start-Sleep -Seconds 5
+try { Enable-RemoteAccessRoutingDomain -Custom -PassThru -ErrorAction SilentlyContinue } catch {}
+
 Write-Host "▶ 라우팅 엔진 가동 완료!" -ForegroundColor Green
 
-# 2. VPN 인터페이스 및 라우팅 구성
+# 2. VPN 인터페이스 및 경로 구성
 Write-Host "2. VPN 인터페이스 및 경로 구성 중..." -ForegroundColor Cyan
 $tunnels = @(
     @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; Metric="10"; LocalIP=$BgpLocal1Ip; PeerIP=$BgpPeer1Ip },
@@ -64,25 +67,17 @@ $tunnels = @(
 
 foreach ($t in $tunnels) {
     Write-Host "[$($t.Name)] 인터페이스 생성 중..."
-    # [핵심] AWS TGW 모범 사례에 맞춘 모든 트래픽(0.0.0.0/0) 개방
     Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "0.0.0.0/0:$($t.Metric)" -Protocol IKEv2 -ErrorAction Stop
     
-    # [핵심] IP를 넣기 전에 터널을 먼저 연결하여 유령 어댑터를 OS에 실체화시킵니다.
     Write-Host "[$($t.Name)] 어댑터 활성화를 위한 터널 강제 연결 트리거..." -ForegroundColor Yellow
     try { Connect-VpnS2SInterface -Name $t.Name -ErrorAction Stop } catch {}
-    
-    # 어댑터가 OS에 완전히 등록될 때까지 충분히 대기합니다. (매우 중요)
     Start-Sleep -Seconds 5
 
     Write-Host "[$($t.Name)] 활성화된 어댑터에 BGP용 로컬 IP 바인딩 중..."
     try {
         Get-NetIPAddress -InterfaceAlias $t.Name -AddressFamily IPv4 -ErrorAction Stop | Where-Object { $_.IPAddress -ne $t.LocalIP } | Remove-NetIPAddress -Confirm:$false -ErrorAction Stop
     } catch {}
-    
-    # 이제 어댑터가 존재하므로 Element not found 에러가 발생하지 않습니다.
     try { New-NetIPAddress -InterfaceAlias $t.Name -IPAddress $t.LocalIP -PrefixLength 30 -AddressFamily IPv4 -ErrorAction Stop } catch {}
-    
-    # BGP 목적지(Peer IP) 라우팅 삽입
     try { New-NetRoute -DestinationPrefix "$($t.PeerIP)/32" -InterfaceAlias $t.Name -ErrorAction Stop } catch {}
 }
 
@@ -109,7 +104,6 @@ foreach ($p in $peers) {
 # 4. BGP 경로 광고
 Write-Host "4. BGP 경로 광고 중..." -ForegroundColor Cyan
 try { Get-BgpCustomRoute -ErrorAction Stop | Remove-BgpCustomRoute -Force -ErrorAction Stop } catch {}
-# [핵심] 하드코딩 제거 및 동적 변수 사용
 try { Add-BgpCustomRoute -Network $OnpremVpcCidr -ErrorAction Stop } catch {}
 
 # 5. 최종 BGP 세션 확립을 위한 BGP Peer 리프레시
