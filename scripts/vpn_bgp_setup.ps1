@@ -1,5 +1,5 @@
 # =================================================================
-# scripts/vpn_bgp_setup.ps1 (Ghost 어댑터 문제 해결 최종본)
+# scripts/vpn_bgp_setup.ps1 (가장 확실한 엔진 재건축 성공본)
 # =================================================================
 $ErrorActionPreference = "Stop"
 
@@ -20,57 +20,42 @@ foreach ($rule in $fwRules) {
     } catch {}
 }
 
-# 1. RRAS 엔진 기동 및 기존 설정 초기화 (지연 시간 대응 강화 버전)
-Write-Host "1. RRAS 라우팅 엔진 기동 및 초기화 중..." -ForegroundColor Cyan
+# 1. RRAS 엔진 무조건 철거 후 재건축 중... (핑 성공했던 가장 확실한 방식)
+Write-Host "1. RRAS 엔진 무조건 철거 후 재건축 중..." -ForegroundColor Cyan
 
-# 레지스트리 설정 (VPN 및 LAN 라우팅 활성화)
+try { Uninstall-RemoteAccess -Force -ErrorAction SilentlyContinue } catch {}
+Start-Sleep -Seconds 10  # 삭제 후 윈도우가 정리할 시간을 줍니다.
+
+Install-RemoteAccess -VpnType VpnS2S -ErrorAction Stop
+
+# 레지스트리 설정
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
-try { Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force } catch {}
+Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force
 
-# 서비스가 중지되어 있다면 시작, 이미 켜져 있다면 상태 확인
-Write-Host "라우팅 서비스 상태 확인 및 시작..." -ForegroundColor Yellow
-$svc = Get-Service RemoteAccess
-if ($svc.Status -ne 'Running') {
-    Start-Service RemoteAccess
-}
+Write-Host "라우팅 서비스 안전 재시작 및 엔진 활성화 대기..." -ForegroundColor Yellow
+Restart-Service RemoteAccess -Force
 
-# [핵심 교정] Get-RemoteAccess 대신 실제로 에러가 났던 Get-VpnS2SInterface로 체크합니다.
-# 이 명령어가 성공해야 진짜로 명령을 내릴 준비가 된 것입니다.
-$retry = 0
-$engineReady = $false
-while ($retry -lt 15) {
+# [핵심] 서비스가 Running인 것만으로는 부족합니다. 
+# 관리 명령(Get-RemoteAccess)이 실제로 응답할 때까지 최대 2분을 기다립니다.
+$retryCount = 0
+while ($retryCount -lt 12) {
     try {
-        # 실제로 핑(Ping) 역할을 할 명령어를 던져봅니다.
-        $null = Get-VpnS2SInterface -ErrorAction Stop
-        $engineReady = $true
-        Write-Host "▶ 라우팅 엔진 내부 모듈 로드 완료!" -ForegroundColor Green
+        $status = Get-RemoteAccess -ErrorAction Stop
+        Write-Host "▶ 라우팅 엔진이 명령을 받을 준비가 되었습니다!" -ForegroundColor Green
         break
     } catch {
-        Write-Host "⏳ 라우팅 엔진 내부 모듈 로딩 대기 중... ($($retry * 5)초)" -ForegroundColor Gray
-        Start-Sleep -Seconds 5
-        $retry++
+        Write-Host "⏳ 엔진 초기화 대기 중... ($($retryCount * 10)초 경과)" -ForegroundColor Gray
+        Start-Sleep -Seconds 10
+        $retryCount++
     }
 }
 
-if (-not $engineReady) {
-    throw "오류: 라우팅 엔진이 75초 이내에 응답하지 않습니다. 서버 상태를 확인하세요."
+if ($retryCount -eq 12) {
+    throw "오류: 윈도우 라우팅 엔진이 너무 오래 응답하지 않습니다. 서버 재부팅이 필요할 수 있습니다."
 }
+Write-Host "▶ 라우팅 엔진 가동 완료!" -ForegroundColor Green
 
-# 추가 안정화 시간 (WMI 객체 확정)
-Start-Sleep -Seconds 5
-
-Write-Host "기존 VPN 및 BGP 찌꺼기 초기화 중..." -ForegroundColor Yellow
-# 이제 엔진이 확실히 준비되었으므로 에러 없이 실행됩니다.
-try { Get-VpnS2SInterface -ErrorAction SilentlyContinue | Remove-VpnS2SInterface -Force -ErrorAction SilentlyContinue } catch {}
-try { Get-BgpPeer -ErrorAction SilentlyContinue | Remove-BgpPeer -Force -ErrorAction SilentlyContinue } catch {}
-try { Remove-BgpRouter -Force -ErrorAction SilentlyContinue } catch {}
-
-Write-Host "초기화 반영을 위해 서비스 재시작..." -ForegroundColor Yellow
-Restart-Service RemoteAccess -Force
-Start-Sleep -Seconds 10 # 재시작 후 안정화 시간
-Write-Host "▶ 라우팅 엔진 초기화 및 가동 완료!" -ForegroundColor Green
-
-# 2. VPN 인터페이스 및 라우팅 구성 (순서 교정 완료)
+# 2. VPN 인터페이스 및 라우팅 구성
 Write-Host "2. VPN 인터페이스 및 경로 구성 중..." -ForegroundColor Cyan
 $tunnels = @(
     @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; Metric="10"; LocalIP=$BgpLocal1Ip; PeerIP=$BgpPeer1Ip },
@@ -79,7 +64,7 @@ $tunnels = @(
 
 foreach ($t in $tunnels) {
     Write-Host "[$($t.Name)] 인터페이스 생성 중..."
-    # 수정 후 (완벽본)
+    # [핵심] AWS TGW 모범 사례에 맞춘 모든 트래픽(0.0.0.0/0) 개방
     Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "0.0.0.0/0:$($t.Metric)" -Protocol IKEv2 -ErrorAction Stop
     
     # [핵심] IP를 넣기 전에 터널을 먼저 연결하여 유령 어댑터를 OS에 실체화시킵니다.
@@ -124,6 +109,7 @@ foreach ($p in $peers) {
 # 4. BGP 경로 광고
 Write-Host "4. BGP 경로 광고 중..." -ForegroundColor Cyan
 try { Get-BgpCustomRoute -ErrorAction Stop | Remove-BgpCustomRoute -Force -ErrorAction Stop } catch {}
+# [핵심] 하드코딩 제거 및 동적 변수 사용
 try { Add-BgpCustomRoute -Network $OnpremVpcCidr -ErrorAction Stop } catch {}
 
 # 5. 최종 BGP 세션 확립을 위한 BGP Peer 리프레시
