@@ -20,24 +20,38 @@ foreach ($rule in $fwRules) {
     } catch {}
 }
 
-## 1. RRAS 엔진 점검 및 기존 연결망만 수술적 제거 (엔진 전체 삭제 X)
-Write-Host "1. RRAS 엔진 점검 및 기존 연결망 초기화 중..." -ForegroundColor Cyan
-
-# 혹시 모를 기존 찌꺼기(인터페이스, BGP)만 안전하게 지우기 (WMI 엔진 보호)
-Write-Host "기존 VPN 및 BGP 설정을 안전하게 지우는 중..." -ForegroundColor Yellow
-Get-VpnS2SInterface -ErrorAction SilentlyContinue | Remove-VpnS2SInterface -Force -ErrorAction SilentlyContinue
-Get-BgpPeer -ErrorAction SilentlyContinue | Remove-BgpPeer -Force -ErrorAction SilentlyContinue
-try { Remove-BgpRouter -Force -ErrorAction SilentlyContinue } catch {}
+# 1. RRAS 엔진 기동 및 기존 설정 초기화 (순서 완벽 교정본)
+Write-Host "1. RRAS 라우팅 엔진 기동 및 초기화 중..." -ForegroundColor Cyan
 
 # 레지스트리 설정 (VPN 및 LAN 라우팅 활성화)
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
-Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force
+try { Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force } catch {}
 
-Write-Host "라우팅 서비스 재시작 및 안정화 대기..." -ForegroundColor Yellow
+Write-Host "라우팅 서비스 시작 중..." -ForegroundColor Yellow
+try { Start-Service RemoteAccess -ErrorAction SilentlyContinue } catch {}
+
+# [핵심 1] 청소하기 전에 라우팅 엔진이 완전히 켜질 때까지 기다립니다.
+$retry = 0
+while ($retry -lt 12) {
+    try {
+        $null = Get-RemoteAccess -ErrorAction Stop
+        break
+    } catch {
+        Write-Host "⏳ 엔진 활성화 대기 중... ($($retry * 5)초)" -ForegroundColor Gray
+        Start-Sleep -Seconds 5
+        $retry++
+    }
+}
+
+Write-Host "기존 VPN 및 BGP 찌꺼기 초기화 중..." -ForegroundColor Yellow
+# [핵심 2] 이제 엔진이 켜져 있으므로 에러 없이 안전하게 삭제됩니다.
+try { Get-VpnS2SInterface -ErrorAction Stop | Remove-VpnS2SInterface -Force -ErrorAction Stop } catch {}
+try { Get-BgpPeer -ErrorAction Stop | Remove-BgpPeer -Force -ErrorAction Stop } catch {}
+try { Remove-BgpRouter -Force -ErrorAction Stop } catch {}
+
+Write-Host "초기화 반영을 위해 서비스 깔끔하게 재시작..." -ForegroundColor Yellow
 Restart-Service RemoteAccess -Force
-
-# 엔진과 WMI가 통신을 맺을 시간(10초) 부여
-Start-Sleep -Seconds 10
+Start-Sleep -Seconds 5
 Write-Host "▶ 라우팅 엔진 가동 완료!" -ForegroundColor Green
 
 # 2. VPN 인터페이스 및 라우팅 구성 (순서 교정 완료)
