@@ -1,5 +1,5 @@
 # =================================================================
-# scripts/vpn_bgp_setup.ps1 (충돌 코드 제거 및 최적화 완료본)
+# scripts/vpn_bgp_setup.ps1 (엔진 철거 없는 안전한 수술적 초기화본)
 # =================================================================
 $ErrorActionPreference = "Stop"
 
@@ -20,43 +20,44 @@ foreach ($rule in $fwRules) {
     } catch {}
 }
 
-# 1. RRAS 엔진 무조건 철거 후 재건축 중...
-Write-Host "1. RRAS 엔진 무조건 철거 후 재건축 중..." -ForegroundColor Cyan
-
-try { Uninstall-RemoteAccess -Force -ErrorAction SilentlyContinue } catch {}
-Start-Sleep -Seconds 10  
-
-Install-RemoteAccess -VpnType VpnS2S -ErrorAction Stop
+# 1. RRAS 라우팅 엔진 안전 기동 및 찌꺼기 청소 (데드락 완벽 방지)
+Write-Host "1. RRAS 라우팅 엔진 안전 기동 및 초기화 중..." -ForegroundColor Cyan
 
 # 레지스트리 설정 (LAN 라우팅 활성화)
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
-Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force
+try { Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force } catch {}
 
-Write-Host "라우팅 서비스 안전 재시작 및 엔진 활성화 대기..." -ForegroundColor Yellow
-Restart-Service RemoteAccess -Force
+# 서비스를 무조건 '자동'으로 풀고 기동 (Uninstall을 안 하므로 데드락 안 걸림)
+Set-Service -Name RemoteAccess -StartupType Automatic
+try { Start-Service RemoteAccess -ErrorAction SilentlyContinue } catch {}
 
+# 엔진 내부 모듈(WMI)이 명령을 받을 수 있을 때까지 찔러보기
 $retryCount = 0
-while ($retryCount -lt 12) {
+$isReady = $false
+while ($retryCount -lt 15) {
     try {
-        $status = Get-RemoteAccess -ErrorAction Stop
-        Write-Host "▶ 라우팅 엔진이 명령을 받을 준비가 되었습니다!" -ForegroundColor Green
+        $null = Get-VpnS2SInterface -ErrorAction Stop
+        $isReady = $true
         break
     } catch {
-        Write-Host "⏳ 엔진 초기화 대기 중... ($($retryCount * 10)초 경과)" -ForegroundColor Gray
-        Start-Sleep -Seconds 10
+        Write-Host "⏳ 엔진 내부 모듈 로딩 대기 중... ($($retryCount * 5)초)" -ForegroundColor Gray
+        Start-Sleep -Seconds 5
         $retryCount++
     }
 }
 
-if ($retryCount -eq 12) {
-    throw "오류: 윈도우 라우팅 엔진이 너무 오래 응답하지 않습니다. 서버 재부팅이 필요할 수 있습니다."
-}
+if (-not $isReady) { throw "오류: 라우팅 엔진 모듈이 응답하지 않습니다." }
 
-# [핵심 보완] BGP 라우팅(LAN Routing) 기능을 명시적으로 깨워줍니다.
-Start-Sleep -Seconds 5
+Write-Host "기존 VPN 및 BGP 찌꺼기 안전하게 수술적 제거 중..." -ForegroundColor Yellow
+# 에러 무시하고 부드럽게 지우기 (Uninstall 대신 이 방법을 씁니다)
+try { Get-VpnS2SInterface -ErrorAction SilentlyContinue | Remove-VpnS2SInterface -Force -ErrorAction SilentlyContinue } catch {}
+try { Get-BgpPeer -ErrorAction SilentlyContinue | Remove-BgpPeer -Force -ErrorAction SilentlyContinue } catch {}
+try { Remove-BgpRouter -Force -ErrorAction SilentlyContinue } catch {}
+
+# [핵심] BGP 라우팅(LAN Routing) 명시적 기동
 try { Enable-RemoteAccessRoutingDomain -Custom -PassThru -ErrorAction SilentlyContinue } catch {}
 
-Write-Host "▶ 라우팅 엔진 가동 완료!" -ForegroundColor Green
+Write-Host "▶ 라우팅 엔진 가동 준비 완료!" -ForegroundColor Green
 
 # 2. VPN 인터페이스 및 경로 구성
 Write-Host "2. VPN 인터페이스 및 경로 구성 중..." -ForegroundColor Cyan
