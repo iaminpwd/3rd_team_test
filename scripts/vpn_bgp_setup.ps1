@@ -100,7 +100,7 @@ foreach ($p in $peers) {
 # 4. BGP 경로 광고
 Write-Host "4. BGP 경로 광고 중..." -ForegroundColor Cyan
 try { Get-BgpCustomRoute -ErrorAction Stop | Remove-BgpCustomRoute -Force -ErrorAction Stop } catch {}
-try { Add-BgpCustomRoute -Network "192.168.0.0/24" -ErrorAction Stop } catch {}
+try { Add-BgpCustomRoute -Network $OnpremVpcCidr -ErrorAction Stop } catch {}
 
 # 5. 최종 BGP 세션 확립을 위한 BGP Peer 리프레시
 Write-Host "5. 최종 BGP 세션 확립을 위한 BGP Peer 리프레시..." -ForegroundColor Cyan

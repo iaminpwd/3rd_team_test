@@ -4,7 +4,7 @@
 # 온라인 상태인 인스턴스 ID 추출
 INSTANCE_ID=$(aws ssm describe-instance-information \
   --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" \
-  --output text | grep -oE '(i-|mi-)[a-f0-9]+' | head -n 1)
+  --output text | grep -o 'mi-[a-f0-9]*' | head -n 1)
 
 if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ] && [ "$INSTANCE_ID" != "null" ]; then
   echo "✅ 온프레미스 서버($INSTANCE_ID)를 발견했습니다. 초기화 명령을 전송합니다."

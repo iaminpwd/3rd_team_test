@@ -30,12 +30,10 @@ jobs:
 
       - name: "[통합] 인스턴스 인식 및 설정 스크립트 전송"
         shell: bash
-        env:
-          # 스크립트에서 사용할 환경 변수들을 정의합니다.
-          AWS_VPC_CIDR: "10.1.0.0/16"
-          ONPREM_VPC_CIDR: "192.168.0.0/24"
         run: |
           # Terraform Output을 환경 변수로 추출 (-chdir 옵션 삭제)
+          export AWS_VPC_CIDR=$(terraform output -raw vpc_cidr) # 10.0.0.0/16을 자동으로 가져옴
+          export ONPREM_VPC_CIDR=$(terraform output -raw onprem_vpc_cidr) # 192.168.0.0/24를 자동으로 가져옴
           export TUNNEL1_IP=$(terraform output -raw vpn_tunnel1_ip)
           export TUNNEL1_PSK=$(terraform output -raw vpn_tunnel1_psk)
           export BGP_PEER1_IP=$(terraform output -raw vpn_bgp_peer1_ip)

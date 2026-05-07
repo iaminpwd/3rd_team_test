@@ -193,10 +193,9 @@ output "ssm_activation_code" {
 }
 
 # ---------------------------------------------------------
-# TGW
+# Transit Gateway
 # ---------------------------------------------------------
 output "vpn_tunnel1_ip" { value = module.networking.tunnel1_ip }
-
 output "vpn_tunnel1_psk" { 
   value     = module.networking.tunnel1_psk
   sensitive = true 
@@ -206,7 +205,6 @@ output "vpn_bgp_peer1_ip"  { value = module.networking.bgp_peer1_ip }
 output "vpn_bgp_local1_ip" { value = module.networking.bgp_local1_ip }
 
 output "vpn_tunnel2_ip" { value = module.networking.tunnel2_ip }
-
 output "vpn_tunnel2_psk" { 
   value     = module.networking.tunnel2_psk
   sensitive = true 
@@ -214,3 +212,8 @@ output "vpn_tunnel2_psk" {
 
 output "vpn_bgp_peer2_ip"  { value = module.networking.bgp_peer2_ip }
 output "vpn_bgp_local2_ip" { value = module.networking.bgp_local2_ip }
+
+output "onprem_vpc_cidr" {
+  description = "온프레미스(홈 랩)의 CIDR 대역"
+  value       = module.networking.onprem_vpc_cidr
+}

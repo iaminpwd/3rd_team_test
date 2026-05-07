@@ -110,9 +110,10 @@ output "sg_devops_id" {
 }
 
 
+
+
+# ─── Transit Gateway ──────────────────────────────────
 output "tunnel1_ip" { value = aws_vpn_connection.vpn.tunnel1_address }
-
-
 output "tunnel1_psk" { 
   value     = aws_vpn_connection.vpn.tunnel1_preshared_key
   sensitive = true 
@@ -122,8 +123,6 @@ output "bgp_peer1_ip" { value = aws_vpn_connection.vpn.tunnel1_vgw_inside_addres
 output "bgp_local1_ip" { value = aws_vpn_connection.vpn.tunnel1_cgw_inside_address }
 
 output "tunnel2_ip" { value = aws_vpn_connection.vpn.tunnel2_address }
-
-
 output "tunnel2_psk" { 
   value     = aws_vpn_connection.vpn.tunnel2_preshared_key
   sensitive = true 
@@ -131,3 +130,8 @@ output "tunnel2_psk" {
 
 output "bgp_peer2_ip" { value = aws_vpn_connection.vpn.tunnel2_vgw_inside_address }
 output "bgp_local2_ip" { value = aws_vpn_connection.vpn.tunnel2_cgw_inside_address }
+
+output "onprem_vpc_cidr" {
+  description = "온프레미스(홈 랩)의 CIDR 대역"
+  value       = var.onprem_vpc_cidr
+}
