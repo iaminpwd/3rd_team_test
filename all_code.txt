@@ -1,0 +1,2070 @@
+
+# FILE: ./variables.tf
+variable "project" {
+  description = "프로젝트 이름 (리소스 태그 prefix)"
+  type        = string
+  default     = "his"
+}
+
+variable "region" {
+  description = "AWS 리전"
+  type        = string
+  default     = "ap-northeast-2"
+}
+
+variable "azs" {
+  description = "사용할 가용영역 목록"
+  type        = list(string)
+  default     = ["ap-northeast-2a", "ap-northeast-2c"]
+}
+
+variable "profile" {
+  description = "AWS CLI 프로파일"
+  type        = string
+  default     = "his-project"
+}
+
+# ─── VPC ──────────────────────────────────────────────
+variable "vpc_cidr" {
+  description = "VPC1 CIDR 블록"
+  type        = string
+  default     = "10.0.0.0/16"
+}
+
+# ─── 서브넷 ───────────────────────────────────────────
+variable "public_subnet_cidrs" {
+  description = "퍼블릭 서브넷 CIDR 목록 (AZ-A: 대외 서비스 관문, AZ-C: 내부 관리 관문)"
+  type        = list(string)
+  default     = ["10.0.1.0/24", "10.0.11.0/24"]
+}
+
+variable "private_eks_cidrs" {
+  description = "EKS 프라이빗 서브넷 CIDR 목록 (AZ-A만)"
+  type        = list(string)
+  default     = ["10.0.2.0/24"]
+}
+
+variable "private_devops_cidr" {
+  description = "DevOps 서브넷 CIDR (Jenkins, GitLab, Fargate - AZ-A)"
+  type        = string
+  default     = "10.0.4.0/24"
+}
+
+variable "private_main_cidr" {
+  description = "메인 서버팜 서브넷 CIDR (ECR, Kafka, RDS, Lambda, API Gateway - AZ-C)"
+  type        = string
+  default     = "10.0.5.0/24"
+}
+
+variable "private_monitor_cidr" {
+  description = "관리망 서브넷 CIDR (Prometheus, Grafana, OpenSearch - AZ-C)"
+  type        = string
+  default     = "10.0.6.0/24"
+}
+
+# ─── Bastion ──────────────────────────────────────────
+variable "bastion_instance_type" {
+  description = "Bastion EC2 인스턴스 타입"
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "bastion_ami_id" {
+  description = "Bastion EC2 AMI ID (Amazon Linux 2023, ap-northeast-2)"
+  type        = string
+  default     = "ami-05d2438ca66594916"
+}
+
+variable "bastion_key_name" {
+  description = "Bastion EC2 Key Pair 이름"
+  type        = string
+  default     = "his-bastion-key"
+}
+
+variable "allowed_ssh_cidrs" {
+  description = "Bastion SSH 허용 CIDR 목록 (팀원 IP)"
+  type        = list(string)
+  default     = [
+    "116.46.68.76/32",
+    "49.1.53.163/32",
+    "221.168.178.114/32",
+    "211.37.27.58/32",
+    "211.243.114.16/32",
+    "114.202.227.142/32"
+  ]
+}
+
+variable "vpn_cidr" {
+  description = "온프레미스 VPN CIDR (DevOps SG 인바운드 허용)"
+  type        = string
+  default     = "192.168.0.0/24"
+}
+
+# ─── VPC2 (WorkSpaces VDI) ────────────────────────────
+variable "vpc2_cidr" {
+  description = "VPC2 CIDR 블록 (WorkSpaces VDI)"
+  type        = string
+  default     = "10.1.0.0/16"
+}
+
+variable "workspaces_subnet_cidr" {
+  description = "WorkSpaces 서브넷 CIDR (AZ-A)"
+  type        = string
+  default     = "10.1.1.0/24"
+}
+
+variable "workspaces_subnet_cidr_c" {
+  description = "WorkSpaces 서브넷 CIDR (AZ-C) - AD Connector용"
+  type        = string
+  default     = "10.1.2.0/24"
+}
+
+# ─── EKS ──────────────────────────────────────────────
+variable "eks_cluster_version" {
+  description = "EKS 클러스터 버전"
+  type        = string
+  default     = "1.31"
+}
+
+variable "eks_node_instance_type" {
+  description = "EKS 노드 인스턴스 타입"
+  type        = string
+  default     = "t3.medium"
+}
+
+variable "eks_node_desired_size" {
+  description = "EKS 노드 기본 수"
+  type        = number
+  default     = 2
+}
+
+variable "eks_node_min_size" {
+  description = "EKS 노드 최소 수"
+  type        = number
+  default     = 1
+}
+
+variable "eks_node_max_size" {
+  description = "EKS 노드 최대 수"
+  type        = number
+  default     = 4
+}
+
+# ─── RDS ──────────────────────────────────────────────
+variable "db_name" {
+  description = "데이터베이스 이름"
+  type        = string
+  default     = "hisdb"
+}
+
+variable "db_username" {
+  description = "DB 마스터 사용자 이름"
+  type        = string
+  sensitive   = true
+  default     = "hisadmin"
+}
+
+variable "db_password" {
+  description = "DB 마스터 패스워드 (terraform.tfvars에 설정)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "db_instance_class" {
+  description = "RDS 인스턴스 클래스"
+  type        = string
+  default     = "db.t3.micro"
+}
+
+variable "db_allocated_storage" {
+  description = "RDS 스토리지 (GB)"
+  type        = number
+  default     = 20
+}
+
+variable "db_engine_version" {
+  description = "PostgreSQL 버전"
+  type        = string
+  default     = "16.3"
+}
+
+variable "db_multi_az" {
+  description = "RDS Multi-AZ 활성화"
+  type        = bool
+  default     = true
+}
+
+# ─── WorkSpaces ───────────────────────────────────────
+variable "ad_directory_id" {
+  description = "AD Connector Directory ID (WorkSpaces 연동)"
+  type        = string
+  default     = ""
+}
+
+variable "workspace_bundle_id" {
+  description = "WorkSpaces 번들 ID"
+  type        = string
+  default     = "wsb-gk1wpk43z"
+}
+
+# ─── Monitoring ───────────────────────────────────────
+variable "jenkins_instance_type" {
+  description = "Jenkins EC2 인스턴스 타입"
+  type        = string
+  default     = "t3.medium"
+}
+
+variable "gitlab_instance_type" {
+  description = "GitLab EC2 인스턴스 타입"
+  type        = string
+  default     = "t3.large"
+}
+
+variable "prometheus_instance_type" {
+  description = "Prometheus + Grafana EC2 인스턴스 타입"
+  type        = string
+  default     = "t3.small"
+}
+
+variable "opensearch_instance_type" {
+  description = "Amazon OpenSearch Service 인스턴스 타입"
+  type        = string
+  default     = "t3.small.search"
+}
+
+# ─── Azure DR ─────────────────────────────────────────
+variable "azure_subscription_id" {
+  description = "Azure 구독 ID (terraform.tfvars에 설정)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "azure_tenant_id" {
+  description = "Azure 테넌트 ID (terraform.tfvars에 설정)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "azure_client_id" {
+  description = "Azure Service Principal Client ID"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "azure_client_secret" {
+  description = "Azure Service Principal Client Secret"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "azure_location" {
+  description = "Azure 리전"
+  type        = string
+  default     = "koreacentral"
+}
+
+variable "azure_vnet_cidr" {
+  description = "Azure VNet CIDR"
+  type        = string
+  default     = "10.2.0.0/16"
+}
+
+variable "azure_aks_subnet_cidr" {
+  description = "AKS 서브넷 CIDR"
+  type        = string
+  default     = "10.2.1.0/24"
+}
+
+variable "azure_gateway_subnet_cidr" {
+  description = "Azure VPN Gateway 서브넷 CIDR"
+  type        = string
+  default     = "10.2.255.0/27"
+}
+
+variable "azure_aks_node_count" {
+  description = "AKS 노드 수"
+  type        = number
+  default     = 2
+}
+
+variable "azure_aks_node_vm_size" {
+  description = "AKS 노드 VM 크기"
+  type        = string
+  default     = "Standard_D2s_v3"
+}
+
+variable "aws_vpn_gateway_ip" {
+  description = "AWS Site-to-Site VPN 터널 IP (apply 후 입력)"
+  type        = string
+  default     = ""
+}
+
+variable "vpn_shared_key" {
+  description = "AWS ↔ Azure VPN 공유키 (terraform.tfvars에 설정)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "domain_name" {
+  description = "서비스 도메인 (Route 53 Failover)"
+  type        = string
+  default     = ""
+}
+
+variable "aws_alb_dns" {
+  description = "AWS ALB DNS 이름 (Route 53 Primary 레코드)"
+  type        = string
+  default     = ""
+}
+
+
+
+# TGW
+variable "aws_asn" {
+  description = "AWS Transit Gateway의 BGP ASN"
+  type        = number
+  default     = 64512
+}
+
+variable "onprem_asn" {
+  description = "온프레미스(홈 랩)의 BGP ASN"
+  type        = number
+  default     = 65000
+}
+
+# FILE: ./.github/workflows/destroy.yml
+name: destroy
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: terraform-deploy
+  cancel-in-progress: false
+
+jobs:
+  terraform-destroy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v3
+
+      - name: Terraform 설치
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+          terraform_wrapper: false
+
+      - name: AWS 자격 증명 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      - name: Windows Server 내부 설정 찌꺼기 초기화 (SSM)
+        continue-on-error: true  # 초기화 실패가 인프라 삭제 자체를 막지 않도록 설정
+        shell: bash
+        run: |
+          chmod +x ./scripts/cleanup_vpn.sh
+          ./scripts/cleanup_vpn.sh
+
+      - name: Terraform 초기화 및 삭제
+        run: |
+          terraform init
+          terraform destroy -auto-approve
+# FILE: ./outputs.tf
+# ══════════════════════════════════════════════════════
+# networking (항상 활성)
+# ══════════════════════════════════════════════════════
+output "vpc_id" {
+  description = "VPC1 ID"
+  value       = module.networking.vpc_id
+}
+
+output "vpc_cidr" {
+  description = "VPC1 CIDR"
+  value       = module.networking.vpc_cidr
+}
+
+output "public_subnet_ids" {
+  description = "퍼블릭 서브넷 ID 목록"
+  value       = module.networking.public_subnet_ids
+}
+
+output "private_eks_subnet_ids" {
+  description = "EKS 프라이빗 서브넷 ID 목록"
+  value       = module.networking.private_eks_subnet_ids
+}
+
+output "private_devops_subnet_id" {
+  description = "DevOps 프라이빗 서브넷 ID"
+  value       = module.networking.private_devops_subnet_id
+}
+
+output "private_main_subnet_id" {
+  description = "메인 서버팜 프라이빗 서브넷 ID"
+  value       = module.networking.private_main_subnet_id
+}
+
+output "private_monitor_subnet_id" {
+  description = "관리망 프라이빗 서브넷 ID"
+  value       = module.networking.private_monitor_subnet_id
+}
+
+output "nat_gateway_id" {
+  description = "NAT Gateway ID"
+  value       = module.networking.nat_gateway_id
+}
+
+output "nat_eip" {
+  description = "NAT Gateway EIP"
+  value       = module.networking.nat_eip
+}
+
+output "bastion_public_ip" {
+  description = "Bastion EC2 퍼블릭 IP"
+  value       = module.networking.bastion_public_ip
+}
+
+output "bastion_instance_id" {
+  description = "Bastion EC2 인스턴스 ID"
+  value       = module.networking.bastion_instance_id
+}
+
+output "sg_bastion_id" {
+  description = "Bastion Security Group ID"
+  value       = module.networking.sg_bastion_id
+}
+
+output "sg_alb_id" {
+  description = "ALB Security Group ID"
+  value       = module.networking.sg_alb_id
+}
+
+output "sg_eks_id" {
+  description = "EKS Security Group ID"
+  value       = module.networking.sg_eks_id
+}
+
+output "sg_devops_id" {
+  description = "DevOps Security Group ID"
+  value       = module.networking.sg_devops_id
+}
+
+output "sg_main_id" {
+  description = "메인 서버팜 Security Group ID"
+  value       = module.networking.sg_main_id
+}
+
+output "sg_monitor_id" {
+  description = "관리망 Security Group ID"
+  value       = module.networking.sg_monitor_id
+}
+
+output "vpc2_id" {
+  description = "VPC2 (WorkSpaces) ID"
+  value       = module.networking.vpc2_id
+}
+
+output "workspaces_subnet_id" {
+  description = "WorkSpaces 서브넷 ID (AZ-A)"
+  value       = module.networking.workspaces_subnet_id
+}
+
+output "workspaces_subnet_c_id" {
+  description = "WorkSpaces 서브넷 ID (AZ-C) - AD Connector용"
+  value       = module.networking.workspaces_subnet_c_id
+}
+
+output "sg_workspaces_id" {
+  description = "WorkSpaces Security Group ID"
+  value       = module.networking.sg_workspaces_id
+}
+
+# ══════════════════════════════════════════════════════
+# eks - 주석 해제 후 활성화
+# ══════════════════════════════════════════════════════
+# output "eks_cluster_name" {
+#   description = "EKS 클러스터 이름"
+#   value       = module.eks.cluster_name
+# }
+#
+# output "eks_cluster_endpoint" {
+#   description = "EKS API 엔드포인트"
+#   value       = module.eks.cluster_endpoint
+# }
+#
+# output "eks_oidc_provider_arn" {
+#   description = "OIDC Provider ARN"
+#   value       = module.eks.oidc_provider_arn
+# }
+
+# ══════════════════════════════════════════════════════
+# auth - 주석 해제 후 활성화
+# ══════════════════════════════════════════════════════
+# output "api_gateway_url" {
+#   description = "API Gateway 엔드포인트 URL"
+#   value       = module.auth.api_gateway_url
+# }
+#
+# output "lambda_arn" {
+#   description = "Lambda 함수 ARN"
+#   value       = module.auth.lambda_arn
+# }
+
+# ══════════════════════════════════════════════════════
+# rds - 주석 해제 후 활성화
+# ══════════════════════════════════════════════════════
+# output "db_endpoint" {
+#   description = "RDS 엔드포인트"
+#   value       = module.rds.db_endpoint
+# }
+#
+# output "db_port" {
+#   description = "RDS 포트"
+#   value       = module.rds.db_port
+# }
+
+# ══════════════════════════════════════════════════════
+# monitoring - 주석 해제 후 활성화
+# ══════════════════════════════════════════════════════
+# output "prometheus_private_ip" {
+#   description = "Prometheus/Grafana EC2 프라이빗 IP"
+#   value       = module.monitoring.prometheus_private_ip
+# }
+#
+# output "opensearch_private_ip" {
+#   description = "OpenSearch EC2 프라이빗 IP"
+#   value       = module.monitoring.opensearch_private_ip
+# }
+
+# ══════════════════════════════════════════════════════
+# workspaces - 주석 해제 후 활성화
+# ══════════════════════════════════════════════════════
+# output "workspace_id" {
+#   description = "WorkSpaces 인스턴스 ID"
+#   value       = module.workspaces.workspace_id
+# }
+
+# ══════════════════════════════════════════════════════
+# azure - 주석 해제 후 활성화
+# ══════════════════════════════════════════════════════
+# output "aks_cluster_name" {
+#   description = "AKS 클러스터 이름"
+#   value       = module.azure.aks_cluster_name
+# }
+#
+# output "azure_vpn_gateway_ip" {
+#   description = "Azure VPN Gateway 퍼블릭 IP"
+#   value       = module.azure.vpn_gateway_ip
+# }
+
+
+output "ssm_activation_id" { value = aws_ssm_activation.windows_onprem.id }
+
+output "ssm_activation_code" { 
+  value     = aws_ssm_activation.windows_onprem.activation_code
+  sensitive = true 
+}
+
+# ---------------------------------------------------------
+# Transit Gateway
+# ---------------------------------------------------------
+output "vpn_tunnel1_ip" { value = module.networking.tunnel1_ip }
+output "vpn_tunnel1_psk" { 
+  value     = module.networking.tunnel1_psk
+  sensitive = true 
+}
+
+output "vpn_bgp_peer1_ip"  { value = module.networking.bgp_peer1_ip }
+output "vpn_bgp_local1_ip" { value = module.networking.bgp_local1_ip }
+
+output "vpn_tunnel2_ip" { value = module.networking.tunnel2_ip }
+output "vpn_tunnel2_psk" { 
+  value     = module.networking.tunnel2_psk
+  sensitive = true 
+}
+
+output "vpn_bgp_peer2_ip"  { value = module.networking.bgp_peer2_ip }
+output "vpn_bgp_local2_ip" { value = module.networking.bgp_local2_ip }
+
+output "onprem_vpc_cidr" {
+  description = "온프레미스(홈 랩)의 CIDR 대역"
+  value       = module.networking.onprem_vpc_cidr
+}
+# FILE: ./.github/workflows/deploy.yml
+name: apply
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy-infra-and-configure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v3
+
+      - name: Terraform 설치
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+          terraform_wrapper: false
+
+      - name: AWS 자격 증명 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      - name: Terraform 초기화 및 배포
+        run: |
+          terraform init -reconfigure
+          terraform apply -auto-approve
+
+      - name: "[통합] 인스턴스 인식 및 설정 스크립트 전송"
+        shell: bash
+        run: |
+          # Terraform Output을 환경 변수로 추출 (-chdir 옵션 삭제)
+          export AWS_VPC_CIDR=$(terraform output -raw vpc_cidr) # 10.0.0.0/16을 자동으로 가져옴
+          export ONPREM_VPC_CIDR=$(terraform output -raw onprem_vpc_cidr) # 192.168.0.0/24를 자동으로 가져옴
+          export TUNNEL1_IP=$(terraform output -raw vpn_tunnel1_ip)
+          export TUNNEL1_PSK=$(terraform output -raw vpn_tunnel1_psk)
+          export BGP_PEER1_IP=$(terraform output -raw vpn_bgp_peer1_ip)
+          export BGP_LOCAL1_IP=$(terraform output -raw vpn_bgp_local1_ip)
+          export TUNNEL2_IP=$(terraform output -raw vpn_tunnel2_ip)
+          export TUNNEL2_PSK=$(terraform output -raw vpn_tunnel2_psk)
+          export BGP_PEER2_IP=$(terraform output -raw vpn_bgp_peer2_ip)
+          export BGP_LOCAL2_IP=$(terraform output -raw vpn_bgp_local2_ip)
+
+          # 분리된 스크립트 실행
+          chmod +x ./scripts/setup_vpn.sh
+          ./scripts/setup_vpn.sh
+# FILE: ./backend.tf
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 3.0"
+    }
+  }
+
+  backend "s3" {
+    bucket         = "my-terraform-state-bucket-test140234"
+    key            = "dr-project/terraform.tfstate"
+    region         = "ap-northeast-2"
+    encrypt        = true
+  }
+}
+
+
+
+# FILE: ./modules/networking/vpc_tgw_vpn.tf
+# ---------------------------------------------------------
+# 하이브리드 커넥티비티 (TGW + CGW + VPN)
+# ---------------------------------------------------------
+resource "aws_ec2_transit_gateway" "tgw" {
+  amazon_side_asn                 = var.aws_asn
+  auto_accept_shared_attachments  = "enable"
+  default_route_table_association = "enable"
+  default_route_table_propagation = "enable" 
+  tags = { Name = "TGW-Main" }
+}
+
+resource "aws_ec2_transit_gateway_vpc_attachment" "tgw_attach_vpc_a" {
+  # 반드시 '진짜 메인 VPC'에 속한 서브넷들만 넣어야 합니다!
+  subnet_ids         = [aws_subnet.private_devops.id, aws_subnet.private_main.id]
+  transit_gateway_id = aws_ec2_transit_gateway.tgw.id
+  vpc_id             = aws_vpc.main.id
+  tags = { Name = "TGW-Attach-VPC-A" }
+}
+
+resource "aws_customer_gateway" "cgw" {
+  bgp_asn    = var.onprem_asn
+  ip_address = var.cgw_public_ip 
+  type       = "ipsec.1"
+  tags = { Name = "CGW-Home-Windows-Server" }
+}
+
+resource "aws_vpn_connection" "vpn" {
+  customer_gateway_id = aws_customer_gateway.cgw.id
+  transit_gateway_id  = aws_ec2_transit_gateway.tgw.id
+  type                = aws_customer_gateway.cgw.type
+  
+  static_routes_only  = false 
+
+  tunnel1_preshared_key = var.tunnel1_psk
+  tunnel1_inside_cidr   = "169.254.254.124/30" 
+  
+  tunnel2_preshared_key = var.tunnel2_psk
+  tunnel2_inside_cidr   = "169.254.254.128/30"
+  
+  depends_on = [
+    aws_customer_gateway.cgw,
+    aws_ec2_transit_gateway.tgw
+  ]
+
+  tags = { Name = "VPN-TGW-to-Home" }
+}
+# FILE: ./modules/networking/bastion.tf
+# ══════════════════════════════════════════════════════
+# Bastion EC2 (VPN 구성 전 임시 접근 용도)
+# ══════════════════════════════════════════════════════
+resource "aws_instance" "bastion" {
+  ami                         = var.bastion_ami_id
+  instance_type               = var.bastion_instance_type
+  subnet_id                   = aws_subnet.public[1].id # AZ-C 퍼블릭 서브넷 (내부 관리 관문)
+  key_name                    = var.bastion_key_name
+  vpc_security_group_ids      = [aws_security_group.bastion.id]
+  associate_public_ip_address = true
+
+  root_block_device {
+    volume_type           = "gp3"
+    volume_size           = 20
+    delete_on_termination = true
+    encrypted             = true
+  }
+
+  metadata_options {
+    http_tokens = "required" # IMDSv2 강제
+  }
+
+  tags = {
+    Name = "${local.name}-bastion"
+    Role = "bastion"
+  }
+}
+
+# FILE: ./scripts/vpn_bgp_cleanup.ps1
+# scripts/vpn_bgp_cleanup.ps1
+Write-Host "1. BGP 정책 및 라우팅 설정 초기화"
+Get-BgpRoutingPolicy -ErrorAction SilentlyContinue | Remove-BgpRoutingPolicy -Force -ErrorAction SilentlyContinue
+Get-BgpCustomRoute -ErrorAction SilentlyContinue | Remove-BgpCustomRoute -Force -ErrorAction SilentlyContinue
+
+Write-Host "2. BGP 피어(Peer) 및 라우터 제거"
+$peers = @("AWS-TGW-Peer1", "AWS-TGW-Peer2")
+foreach ($p in $peers) {
+    Remove-BgpPeer -Name $p -Force -ErrorAction SilentlyContinue
+}
+Remove-BgpRouter -Force -ErrorAction SilentlyContinue
+
+Write-Host "3. VPN Site-to-Site 인터페이스 제거"
+$tunnels = @("AWS-TGW-Tunnel1", "AWS-TGW-Tunnel2")
+foreach ($t in $tunnels) {
+    Remove-VpnS2SInterface -Name $t -Force -ErrorAction SilentlyContinue
+}
+Write-Host "4. 라우팅 서비스 재시작하여 초기화 상태 반영"
+Restart-Service RemoteAccess -ErrorAction SilentlyContinue
+
+# ===== [추가된 핵심 부분] =====
+Write-Host "5. RRAS 엔진 구성 완전 초기화 (현업 표준 선언적 초기화)"
+Uninstall-RemoteAccess -Force -ErrorAction SilentlyContinue
+# ==============================
+
+Write-Host "✅ 윈도우 서버 내부의 하이브리드 클라우드(VPN/BGP) 설정이 모두 초기화되었습니다."
+# FILE: ./modules/networking/variables.tf
+variable "project" {
+  description = "프로젝트 이름"
+  type        = string
+}
+
+variable "region" {
+  description = "AWS 리전"
+  type        = string
+}
+
+variable "azs" {
+  description = "사용할 가용영역 목록"
+  type        = list(string)
+}
+
+variable "vpc_cidr" {
+  description = "VPC CIDR 블록"
+  type        = string
+}
+
+# ─── 서브넷 CIDR ───────────────────────────────────────
+variable "public_subnet_cidrs" {
+  description = "퍼블릭 서브넷 CIDR 목록 (AZ-A: 대외 서비스 관문, AZ-C: 내부 관리 관문)"
+  type        = list(string)
+}
+
+variable "private_eks_cidrs" {
+  description = "EKS 프라이빗 서브넷 CIDR 목록 (AZ-A만)"
+  type        = list(string)
+}
+
+variable "private_devops_cidr" {
+  description = "DevOps 서브넷 CIDR (Jenkins, GitLab, Fargate - AZ-A)"
+  type        = string
+}
+
+variable "private_main_cidr" {
+  description = "메인 서버팜 서브넷 CIDR (ECR, Kafka, RDS, Lambda, API Gateway - AZ-C)"
+  type        = string
+}
+
+variable "private_monitor_cidr" {
+  description = "관리망 서브넷 CIDR (Prometheus, Grafana, OpenSearch - AZ-C)"
+  type        = string
+}
+
+# ─── Bastion ───────────────────────────────────────────
+variable "bastion_instance_type" {
+  description = "Bastion EC2 인스턴스 타입"
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "bastion_ami_id" {
+  description = "Bastion EC2 AMI ID"
+  type        = string
+}
+
+variable "bastion_key_name" {
+  description = "Bastion EC2 Key Pair 이름"
+  type        = string
+}
+
+variable "allowed_ssh_cidrs" {
+  description = "SSH 허용 CIDR 목록 (팀원 IP)"
+  type        = list(string)
+}
+
+variable "vpn_cidr" {
+  description = "온프레미스 VPN CIDR"
+  type        = string
+}
+
+# ─── VPC2 (WorkSpaces VDI) ────────────────────────────
+variable "vpc2_cidr" {
+  description = "VPC2 CIDR 블록 (WorkSpaces VDI)"
+  type        = string
+}
+
+variable "workspaces_subnet_cidr" {
+  description = "WorkSpaces 서브넷 CIDR (AZ-A)"
+  type        = string
+}
+
+variable "workspaces_subnet_cidr_c" {
+  description = "WorkSpaces 서브넷 CIDR (AZ-C) - AD Connector용"
+  type        = string
+}
+
+
+variable "onprem_vpc_cidr" {
+  description = "온프레미스(홈 랩)의 CIDR 대역"
+  type        = string
+}
+
+variable "aws_asn" {
+  description = "AWS Transit Gateway의 BGP ASN"
+  type        = number
+}
+
+variable "onprem_asn" {
+  description = "온프레미스(홈 랩)의 BGP ASN"
+  type        = number
+}
+
+# --- 아래는 SSM에서 읽어와 루트가 넘겨줄 보안 데이터 ---
+variable "cgw_public_ip" {
+  description = "CGW 퍼블릭 IP"
+  type        = string
+}
+
+variable "tunnel1_psk" {
+  description = "VPN Tunnel 1 PSK"
+  type        = string
+  sensitive   = true
+}
+
+variable "tunnel2_psk" {
+  description = "VPN Tunnel 2 PSK"
+  type        = string
+  sensitive   = true
+}
+# FILE: ./ssm_hybrid.tf
+# --------------------------------------------------------- 
+# SSM Hybrid Activation
+# ---------------------------------------------------------
+resource "aws_iam_role" "ssm_hybrid_role" {
+  name = "SSM-Hybrid-Windows-Role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "ssm.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ssm_hybrid_attach" {
+  role       = aws_iam_role.ssm_hybrid_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_ssm_activation" "windows_onprem" {
+  name               = "windows-home-server-activation"
+  iam_role           = aws_iam_role.ssm_hybrid_role.name
+  registration_limit = 5
+  depends_on         = [aws_iam_role_policy_attachment.ssm_hybrid_attach]
+}
+
+resource "aws_ssm_parameter" "activation_id" {
+  name      = "/vpn/home/ssm_activation_id"
+  type      = "String"
+  value     = aws_ssm_activation.windows_onprem.id
+  overwrite = true 
+}
+
+resource "aws_ssm_parameter" "activation_code" {
+  name      = "/vpn/home/ssm_activation_code"
+  type      = "SecureString"
+  value     = aws_ssm_activation.windows_onprem.activation_code
+  overwrite = true
+}
+# FILE: ./data.tf
+# ---------------------------------------------------------
+# 보안 데이터 및 설정 (SSM Parameter Store)
+# ---------------------------------------------------------
+data "aws_ssm_parameter" "tunnel1_psk" {
+  name            = "/vpn/home/tunnel1_psk"
+  with_decryption = true
+}
+
+data "aws_ssm_parameter" "tunnel2_psk" {
+  name            = "/vpn/home/tunnel2_psk"
+  with_decryption = true
+}
+
+data "aws_ssm_parameter" "cgw_public_ip" {
+  name = "/vpn/home/cgw_public_ip"
+}
+# FILE: ./modules/networking/vpc2.tf
+# ══════════════════════════════════════════════════════
+# VPC2 (WorkSpaces VDI) - 10.1.0.0/16
+# ══════════════════════════════════════════════════════
+resource "aws_vpc" "workspaces" {
+  cidr_block           = var.vpc2_cidr
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+
+  tags = {
+    Name = "${local.name}-vpc2-workspaces"
+  }
+}
+
+# ══════════════════════════════════════════════════════
+# WorkSpaces 서브넷 AZ-A (10.1.1.0/24)
+# ══════════════════════════════════════════════════════
+resource "aws_subnet" "workspaces" {
+  vpc_id            = aws_vpc.workspaces.id
+  cidr_block        = var.workspaces_subnet_cidr
+  availability_zone = var.azs[0]
+
+  tags = {
+    Name = "${local.name}-private-workspaces-a"
+    Tier = "private"
+  }
+}
+
+# ══════════════════════════════════════════════════════
+# WorkSpaces 서브넷 AZ-C (10.1.2.0/24) - AD Connector용
+# ══════════════════════════════════════════════════════
+resource "aws_subnet" "workspaces_c" {
+  vpc_id            = aws_vpc.workspaces.id
+  cidr_block        = var.workspaces_subnet_cidr_c
+  availability_zone = var.azs[1]
+
+  tags = {
+    Name = "${local.name}-private-workspaces-c"
+    Tier = "private"
+  }
+}
+
+# ══════════════════════════════════════════════════════
+# 라우팅 테이블 - VPC2 (WorkSpaces → VPC1 경유)
+# ══════════════════════════════════════════════════════
+resource "aws_route_table" "workspaces" {
+  vpc_id = aws_vpc.workspaces.id
+
+  tags = {
+    Name = "${local.name}-rt-workspaces"
+  }
+}
+
+resource "aws_route_table_association" "workspaces" {
+  subnet_id      = aws_subnet.workspaces.id
+  route_table_id = aws_route_table.workspaces.id
+}
+
+resource "aws_route_table_association" "workspaces_c" {
+  subnet_id      = aws_subnet.workspaces_c.id
+  route_table_id = aws_route_table.workspaces.id
+}
+
+# FILE: ./modules/networking/security_groups.tf
+# ══════════════════════════════════════════════════════
+# Security Group - Bastion
+# 인바운드: SSH(22) → 팀원 IP만
+# 아웃바운드: 전체 허용
+# ══════════════════════════════════════════════════════
+resource "aws_security_group" "bastion" {
+  name        = "${local.name}-sg-bastion"
+  description = "Bastion host - SSH from team IPs only"
+  vpc_id      = aws_vpc.main.id
+
+  tags = {
+    Name = "${local.name}-sg-bastion"
+  }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "bastion_ssh" {
+  for_each = toset(var.allowed_ssh_cidrs)
+
+  security_group_id = aws_security_group.bastion.id
+  description       = "SSH from allowed CIDR"
+  ip_protocol       = "tcp"
+  from_port         = 22
+  to_port           = 22
+  cidr_ipv4         = each.value
+}
+
+resource "aws_vpc_security_group_egress_rule" "bastion_all" {
+  security_group_id = aws_security_group.bastion.id
+  description       = "Allow all outbound"
+  ip_protocol       = "-1"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+#온프레미스 핑테스트
+# FILE: ./modules/networking/security_groups.tf
+# 온프레미스 핑테스트 (아래 블록을 통째로 교체하세요)
+resource "aws_vpc_security_group_ingress_rule" "bastion_icmp_from_vpn" {
+  for_each = toset([
+    var.vpn_cidr,        # 192.168.0.0/24 (온프레미스 원본 대역)
+    "169.254.254.0/24"   # VPN 터널 가상 대역 (윈도우가 가끔 이걸 출발지로 씁니다)
+  ])
+
+  security_group_id = aws_security_group.bastion.id
+  description       = "Allow Ping(ICMP) from On-Premises VPN & Tunnel"
+  ip_protocol       = "icmp"
+  from_port         = -1
+  to_port           = -1
+  cidr_ipv4         = each.value
+}
+
+# ══════════════════════════════════════════════════════
+# Security Group - ALB
+# 인바운드: HTTP(80), HTTPS(443) → 0.0.0.0/0
+# 아웃바운드: 전체 허용
+# ══════════════════════════════════════════════════════
+resource "aws_security_group" "alb" {
+  name        = "${local.name}-sg-alb"
+  description = "ALB - HTTP/HTTPS from internet"
+  vpc_id      = aws_vpc.main.id
+
+  tags = {
+    Name = "${local.name}-sg-alb"
+  }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "alb_http" {
+  security_group_id = aws_security_group.alb.id
+  description       = "HTTP from internet"
+  ip_protocol       = "tcp"
+  from_port         = 80
+  to_port           = 80
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "alb_https" {
+  security_group_id = aws_security_group.alb.id
+  description       = "HTTPS from internet"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+resource "aws_vpc_security_group_egress_rule" "alb_all" {
+  security_group_id = aws_security_group.alb.id
+  description       = "Allow all outbound"
+  ip_protocol       = "-1"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+# ══════════════════════════════════════════════════════
+# Security Group - EKS
+# 인바운드: ALB SG, Bastion SG, WorkSpaces 서브넷에서만
+# 아웃바운드: 전체 허용
+# ══════════════════════════════════════════════════════
+resource "aws_security_group" "eks" {
+  name        = "${local.name}-sg-eks"
+  description = "EKS worker nodes - from ALB, Bastion, WorkSpaces only"
+  vpc_id      = aws_vpc.main.id
+
+  tags = {
+    Name = "${local.name}-sg-eks"
+  }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "eks_from_alb" {
+  security_group_id            = aws_security_group.eks.id
+  description                  = "From ALB HTTPS"
+  ip_protocol                  = "tcp"
+  from_port                    = 443
+  to_port                      = 443
+  referenced_security_group_id = aws_security_group.alb.id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "eks_from_alb_http" {
+  security_group_id            = aws_security_group.eks.id
+  description                  = "From ALB HTTP"
+  ip_protocol                  = "tcp"
+  from_port                    = 80
+  to_port                      = 80
+  referenced_security_group_id = aws_security_group.alb.id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "eks_from_bastion" {
+  security_group_id            = aws_security_group.eks.id
+  description                  = "From Bastion (kubectl)"
+  ip_protocol                  = "tcp"
+  from_port                    = 443
+  to_port                      = 443
+  referenced_security_group_id = aws_security_group.bastion.id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "eks_from_workspaces" {
+  security_group_id = aws_security_group.eks.id
+  description       = "From WorkSpaces VDI subnet"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  cidr_ipv4         = var.workspaces_subnet_cidr
+}
+
+resource "aws_vpc_security_group_ingress_rule" "eks_self" {
+  security_group_id            = aws_security_group.eks.id
+  description                  = "EKS node-to-node"
+  ip_protocol                  = "-1"
+  referenced_security_group_id = aws_security_group.eks.id
+}
+
+resource "aws_vpc_security_group_egress_rule" "eks_all" {
+  security_group_id = aws_security_group.eks.id
+  description       = "Allow all outbound"
+  ip_protocol       = "-1"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+# ══════════════════════════════════════════════════════
+# Security Group - Main (메인 서버팜: RDS, Kafka, Lambda 등)
+# 인바운드: EKS SG에서 PostgreSQL(5432), Devops SG에서 접근
+# 아웃바운드: 전체 허용
+# ══════════════════════════════════════════════════════
+resource "aws_security_group" "main" {
+  name        = "${local.name}-sg-main"
+  description = "Main server farm - RDS, Kafka, Lambda from EKS and DevOps"
+  vpc_id      = aws_vpc.main.id
+
+  tags = {
+    Name = "${local.name}-sg-main"
+  }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "main_from_eks" {
+  security_group_id            = aws_security_group.main.id
+  description                  = "PostgreSQL from EKS"
+  ip_protocol                  = "tcp"
+  from_port                    = 5432
+  to_port                      = 5432
+  referenced_security_group_id = aws_security_group.eks.id
+}
+
+resource "aws_vpc_security_group_egress_rule" "main_all" {
+  security_group_id = aws_security_group.main.id
+  description       = "Allow all outbound"
+  ip_protocol       = "-1"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+# ══════════════════════════════════════════════════════
+# Security Group - DevOps (Jenkins, ECR, ELK)
+# 인바운드: Bastion SG, VPN CIDR에서만
+# 아웃바운드: 전체 허용
+# ══════════════════════════════════════════════════════
+resource "aws_security_group" "devops" {
+  name        = "${local.name}-sg-devops"
+  description = "DevOps tools - from Bastion and VPN only"
+  vpc_id      = aws_vpc.main.id
+
+  tags = {
+    Name = "${local.name}-sg-devops"
+  }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "devops_from_bastion" {
+  security_group_id            = aws_security_group.devops.id
+  description                  = "All from Bastion"
+  ip_protocol                  = "-1"
+  referenced_security_group_id = aws_security_group.bastion.id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "devops_from_vpn" {
+  security_group_id = aws_security_group.devops.id
+  description       = "All from on-premises VPN"
+  ip_protocol       = "-1"
+  cidr_ipv4         = var.vpn_cidr
+}
+
+resource "aws_vpc_security_group_egress_rule" "devops_all" {
+  security_group_id = aws_security_group.devops.id
+  description       = "Allow all outbound"
+  ip_protocol       = "-1"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+# ══════════════════════════════════════════════════════
+# Security Group - WorkSpaces (VPC2)
+# 인바운드: 팀원 IP에서 RDP(3389)
+# 아웃바운드: EKS 서브넷 CIDR만 허용
+# ══════════════════════════════════════════════════════
+resource "aws_security_group" "workspaces" {
+  name        = "${local.name}-sg-workspaces"
+  description = "WorkSpaces VDI - RDP inbound, EKS outbound only"
+  vpc_id      = aws_vpc.workspaces.id
+
+  tags = {
+    Name = "${local.name}-sg-workspaces"
+  }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "workspaces_rdp" {
+  for_each = toset(var.allowed_ssh_cidrs)
+
+  security_group_id = aws_security_group.workspaces.id
+  description       = "RDP from allowed CIDR"
+  ip_protocol       = "tcp"
+  from_port         = 3389
+  to_port           = 3389
+  cidr_ipv4         = each.value
+}
+
+resource "aws_vpc_security_group_egress_rule" "workspaces_to_eks_a" {
+  security_group_id = aws_security_group.workspaces.id
+  description       = "To EKS subnet AZ-A"
+  ip_protocol       = "-1"
+  cidr_ipv4         = var.private_eks_cidrs[0]
+}
+
+# ══════════════════════════════════════════════════════
+# Security Group - Monitor (관리망: Prometheus, Grafana, OpenSearch)
+# 인바운드: Bastion SG에서만
+# 아웃바운드: 전체 허용
+# ══════════════════════════════════════════════════════
+resource "aws_security_group" "monitor" {
+  name        = "${local.name}-sg-monitor"
+  description = "Monitor subnet - Grafana, Prometheus, OpenSearch from Bastion only"
+  vpc_id      = aws_vpc.main.id
+
+  tags = {
+    Name = "${local.name}-sg-monitor"
+  }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "monitor_grafana" {
+  security_group_id            = aws_security_group.monitor.id
+  description                  = "Grafana from Bastion"
+  ip_protocol                  = "tcp"
+  from_port                    = 3000
+  to_port                      = 3000
+  referenced_security_group_id = aws_security_group.bastion.id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "monitor_prometheus" {
+  security_group_id            = aws_security_group.monitor.id
+  description                  = "Prometheus from Bastion"
+  ip_protocol                  = "tcp"
+  from_port                    = 9090
+  to_port                      = 9090
+  referenced_security_group_id = aws_security_group.bastion.id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "monitor_opensearch" {
+  security_group_id            = aws_security_group.monitor.id
+  description                  = "OpenSearch from Bastion"
+  ip_protocol                  = "tcp"
+  from_port                    = 9200
+  to_port                      = 9200
+  referenced_security_group_id = aws_security_group.bastion.id
+}
+
+resource "aws_vpc_security_group_egress_rule" "monitor_all" {
+  security_group_id = aws_security_group.monitor.id
+  description       = "Allow all outbound"
+  ip_protocol       = "-1"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+# FILE: ./scripts/vpn_bgp_setup.ps1
+# =================================================================
+# scripts/vpn_bgp_setup.ps1 (하드코딩 복구 및 경로 보호 포함)
+# =================================================================
+$ErrorActionPreference = "Stop"
+
+
+# 0. 필수 기능 및 방화벽 설정
+Write-Host "0. 필수 기능 및 방화벽 설정 중..." -ForegroundColor Cyan
+Install-WindowsFeature -Name RemoteAccess, Routing, DirectAccess-VPN -IncludeManagementTools -ErrorAction SilentlyContinue
+
+# 1. RRAS 라우팅 엔진 안전 기동 및 프로비저닝 (현업 표준)
+Write-Host "1. RRAS 라우팅 엔진 안전 기동 및 초기화 중..." -ForegroundColor Cyan
+
+# 레지스트리 조작 대신 공식 Cmdlet으로 S2S VPN 및 LAN 라우팅 엔진 구성
+Install-RemoteAccess -VpnType VpnS2S -ErrorAction SilentlyContinue
+
+# 서비스 자동 실행 등록 및 기동
+Set-Service -Name RemoteAccess -StartupType Automatic
+try { Start-Service RemoteAccess -ErrorAction SilentlyContinue } catch {}
+# 엔진 준비 대기
+$retryCount = 0
+while ($retryCount -lt 15) {
+    try {
+        $null = Get-VpnS2SInterface -ErrorAction Stop
+        break
+    } catch {
+        Write-Host "⏳ 엔진 모듈 로딩 대기 중..." -ForegroundColor Gray
+        Start-Sleep -Seconds 5
+        $retryCount++
+    }
+}
+
+Write-Host "기존 찌꺼기 제거 및 BGP 활성화..." -ForegroundColor Yellow
+try { Get-VpnS2SInterface | Remove-VpnS2SInterface -Force -ErrorAction SilentlyContinue } catch {}
+try { Get-BgpPeer | Remove-BgpPeer -Force -ErrorAction SilentlyContinue } catch {}
+try { Remove-BgpRouter -Force -ErrorAction SilentlyContinue } catch {}
+try { Enable-RemoteAccessRoutingDomain -Custom -PassThru -ErrorAction SilentlyContinue } catch {}
+
+# 2. VPN 인터페이스 구성 (Metric을 높여 인터넷 하이재킹 방지)
+Write-Host "2. VPN 인터페이스 구성 중..." -ForegroundColor Cyan
+$tunnels = @(
+    @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; Metric="100"; LocalIP=$BgpLocal1Ip; PeerIP=$BgpPeer1Ip },
+    @{ Name="AWS-TGW-Tunnel2"; Dest=$Tunnel2Ip; Psk=$Tunnel2Psk; Metric="150"; LocalIP=$BgpLocal2Ip; PeerIP=$BgpPeer2Ip }
+)
+
+foreach ($t in $tunnels) {
+    Write-Host "[$($t.Name)] 생성 중..."
+    # 하드코딩된 $AwsVpcCidr 대신 0.0.0.0/0을 열어 확장성 유지
+    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "0.0.0.0/0:$($t.Metric)" -Protocol IKEv2 -ErrorAction Stop
+    
+    try { Connect-VpnS2SInterface -Name $t.Name -ErrorAction Stop } catch {}
+    Start-Sleep -Seconds 5
+
+    try { New-NetIPAddress -InterfaceAlias $t.Name -IPAddress $t.LocalIP -PrefixLength 30 -AddressFamily IPv4 -ErrorAction Stop } catch {}
+    try { New-NetRoute -DestinationPrefix "$($t.PeerIP)/32" -InterfaceAlias $t.Name -ErrorAction Stop } catch {}
+}
+
+# 3. BGP 라우터 및 Peer 구성
+Write-Host "3. BGP 설정 중..." -ForegroundColor Cyan
+$myIp = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null }).IPv4Address.IPAddress | Select-Object -First 1
+
+try {
+    Add-BgpRouter -BgpIdentifier $myIp -LocalASN 65000 -ErrorAction Stop
+} catch {
+    Set-BgpRouter -BgpIdentifier $myIp -LocalASN 65000 -Force -ErrorAction Stop
+}
+
+$peers = @(
+    @{ Name="AWS-TGW-Peer1"; Local=$BgpLocal1Ip; Peer=$BgpPeer1Ip },
+    @{ Name="AWS-TGW-Peer2"; Local=$BgpLocal2Ip; Peer=$BgpPeer2Ip }
+)
+foreach ($p in $peers) {
+    try { Add-BgpPeer -Name $p.Name -LocalIPAddress $p.Local -PeerIPAddress $p.Peer -PeerASN 64512 -ErrorAction Stop } catch {}
+    try { Start-BgpPeer -Name $p.Name -ErrorAction Stop } catch {}
+}
+
+# 4. BGP 경로 광고 (하드코딩된 변수 사용)
+Write-Host "4. BGP 경로 광고 중 ($OnpremVpcCidr)..." -ForegroundColor Cyan
+try { Add-BgpCustomRoute -Network $OnpremVpcCidr -ErrorAction Stop } catch {}
+
+# 5. 인터넷 경로 보호
+Write-Host "5. 인터넷 경로 보호 중..." -ForegroundColor Cyan
+# 상태가 Up인 실제 물리/가상 이더넷 어댑터 탐색
+$eth = Get-NetAdapter | Where-Object Status -eq "Up" | Where-Object Name -NotMatch "Tunnel" | Select-Object -First 1
+
+if ($eth) {
+    # 1. 인터페이스 메트릭 조정
+    Set-NetIPInterface -InterfaceAlias $eth.Name -InterfaceMetric 10
+    
+    # 2. 동적으로 기본 게이트웨이 IP 추출 (하드코딩 192.168.0.1 제거)
+    $defaultGateway = (Get-NetIPConfiguration -InterfaceAlias $eth.Name).IPv4DefaultGateway.NextHop
+    
+    if ($defaultGateway) {
+        # 3. 파워쉘 네이티브 명령어로 멱등성 보장 라우팅 추가
+        try { 
+            New-NetRoute -DestinationPrefix "0.0.0.0/0" -InterfaceAlias $eth.Name -NextHop $defaultGateway -RouteMetric 10 -ErrorAction Stop 
+        } catch {
+            Write-Host "기본 경로가 이미 존재하거나 설정할 수 없습니다. (정상)" -ForegroundColor Gray
+        }
+    }
+}
+# FILE: ./modules/networking/vpc1.tf
+locals {
+  name = var.project
+}
+
+# ══════════════════════════════════════════════════════
+# VPC1 (메인 서비스) - 10.0.0.0/16
+# ══════════════════════════════════════════════════════
+resource "aws_vpc" "main" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+
+  tags = {
+    Name = "${local.name}-vpc"
+  }
+}
+
+# ══════════════════════════════════════════════════════
+# 인터넷 게이트웨이
+# ══════════════════════════════════════════════════════
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "${local.name}-igw"
+  }
+}
+
+# ══════════════════════════════════════════════════════
+# 퍼블릭 서브넷
+# AZ-A (10.0.1.0/24): 대외 서비스 관문 (WAF, ALB, NLB)
+# AZ-C (10.0.11.0/24): 내부 관리 관문 (Bastion, NAT)
+# ══════════════════════════════════════════════════════
+resource "aws_subnet" "public" {
+  count             = length(var.public_subnet_cidrs)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.public_subnet_cidrs[count.index]
+  availability_zone = var.azs[count.index]
+
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "${local.name}-public-${count.index == 0 ? "a" : "c"}"
+    Tier = "public"
+  }
+}
+
+# ══════════════════════════════════════════════════════
+# EKS 프라이빗 서브넷 (AZ-A: 10.0.2.0/24)
+# 대외 서비스 서버팜 (EKS Worker Node, Auto Scaling Group)
+# ══════════════════════════════════════════════════════
+resource "aws_subnet" "private_eks" {
+  count             = length(var.private_eks_cidrs)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.private_eks_cidrs[count.index]
+  availability_zone = var.azs[0] # AZ-A
+
+  tags = {
+    Name                              = "${local.name}-private-eks-a"
+    Tier                              = "private"
+    "kubernetes.io/role/internal-elb" = "1"
+  }
+}
+
+# ══════════════════════════════════════════════════════
+# DevOps 프라이빗 서브넷 (AZ-A: 10.0.4.0/24)
+# 개발망 서버팜 (Jenkins, GitLab, Fargate)
+# ══════════════════════════════════════════════════════
+resource "aws_subnet" "private_devops" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.private_devops_cidr
+  availability_zone = var.azs[0] # AZ-A
+
+  tags = {
+    Name = "${local.name}-private-devops"
+    Tier = "private"
+  }
+}
+
+# ══════════════════════════════════════════════════════
+# 메인 서버팜 프라이빗 서브넷 (AZ-C: 10.0.5.0/24)
+# ECR, Kafka, RDS, Lambda, API Gateway
+# ══════════════════════════════════════════════════════
+resource "aws_subnet" "private_main" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.private_main_cidr
+  availability_zone = var.azs[1] # AZ-C
+
+  tags = {
+    Name = "${local.name}-private-main"
+    Tier = "private"
+  }
+}
+
+# ══════════════════════════════════════════════════════
+# 관리망 프라이빗 서브넷 (AZ-C: 10.0.6.0/24)
+# Prometheus, Grafana, OpenSearch
+# ══════════════════════════════════════════════════════
+resource "aws_subnet" "private_monitor" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.private_monitor_cidr
+  availability_zone = var.azs[1] # AZ-C
+
+  tags = {
+    Name = "${local.name}-private-monitor"
+    Tier = "private"
+  }
+}
+
+# ══════════════════════════════════════════════════════
+# NAT Gateway (Public Subnet C, AZ-C: 내부 관리 관문)
+# ══════════════════════════════════════════════════════
+resource "aws_eip" "nat" {
+  domain = "vpc"
+
+  tags = {
+    Name = "${local.name}-nat-eip"
+  }
+
+  depends_on = [aws_internet_gateway.main]
+}
+
+resource "aws_nat_gateway" "main" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public[1].id # AZ-C 퍼블릭 서브넷
+
+  tags = {
+    Name = "${local.name}-nat"
+  }
+
+  depends_on = [aws_internet_gateway.main]
+}
+
+# ══════════════════════════════════════════════════════
+# 라우팅 테이블 구성 (기본 라우팅만 포함)
+# ══════════════════════════════════════════════════════
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+  tags = { Name = "${local.name}-rt-public" }
+}
+
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.main.id
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.main.id
+  }
+  tags = { Name = "${local.name}-rt-private" }
+}
+
+# ══════════════════════════════════════════════════════
+# 온프레미스행 라우팅 (TGW 경유) - 별도 리소스로 분리하여 에러 방지
+# ══════════════════════════════════════════════════════
+resource "aws_route" "public_to_onprem" {
+  route_table_id         = aws_route_table.public.id
+  destination_cidr_block = var.vpn_cidr
+  transit_gateway_id     = aws_ec2_transit_gateway.tgw.id
+}
+
+resource "aws_route" "private_to_onprem" {
+  route_table_id         = aws_route_table.private.id
+  destination_cidr_block = var.vpn_cidr
+  transit_gateway_id     = aws_ec2_transit_gateway.tgw.id
+}
+
+resource "aws_route_table_association" "private_eks" {
+  count          = length(aws_subnet.private_eks)
+  subnet_id      = aws_subnet.private_eks[count.index].id
+  route_table_id = aws_route_table.private.id
+}
+
+resource "aws_route_table_association" "private_devops" {
+  subnet_id      = aws_subnet.private_devops.id
+  route_table_id = aws_route_table.private.id
+}
+
+resource "aws_route_table_association" "private_main" {
+  subnet_id      = aws_subnet.private_main.id
+  route_table_id = aws_route_table.private.id
+}
+
+resource "aws_route_table_association" "private_monitor" {
+  subnet_id      = aws_subnet.private_monitor.id
+  route_table_id = aws_route_table.private.id
+}
+
+
+# ══════════════════════════════════════════════════════
+# 퍼블릭 서브넷 라우팅 테이블 연결 (Bastion을 위해 필수!)
+# ══════════════════════════════════════════════════════
+resource "aws_route_table_association" "public" {
+  count          = length(aws_subnet.public)
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+# FILE: ./modules/networking/outputs.tf
+# ─── VPC ──────────────────────────────────────────────
+output "vpc_id" {
+  description = "VPC ID"
+  value       = aws_vpc.main.id
+}
+
+output "vpc_cidr" {
+  description = "VPC CIDR"
+  value       = aws_vpc.main.cidr_block
+}
+
+# ─── 서브넷 ───────────────────────────────────────────
+output "public_subnet_ids" {
+  description = "퍼블릭 서브넷 ID 목록"
+  value       = aws_subnet.public[*].id
+}
+
+output "private_eks_subnet_ids" {
+  description = "EKS 프라이빗 서브넷 ID 목록"
+  value       = aws_subnet.private_eks[*].id
+}
+
+output "private_devops_subnet_id" {
+  description = "DevOps 프라이빗 서브넷 ID (AZ-A)"
+  value       = aws_subnet.private_devops.id
+}
+
+output "private_main_subnet_id" {
+  description = "메인 서버팜 프라이빗 서브넷 ID (AZ-C)"
+  value       = aws_subnet.private_main.id
+}
+
+output "private_monitor_subnet_id" {
+  description = "관리망 프라이빗 서브넷 ID (AZ-C)"
+  value       = aws_subnet.private_monitor.id
+}
+
+# ─── NAT Gateway ──────────────────────────────────────
+output "nat_gateway_id" {
+  description = "NAT Gateway ID"
+  value       = aws_nat_gateway.main.id
+}
+
+output "nat_eip" {
+  description = "NAT Gateway 퍼블릭 IP"
+  value       = aws_eip.nat.public_ip
+}
+
+# ─── Bastion ──────────────────────────────────────────
+output "bastion_public_ip" {
+  description = "Bastion EC2 퍼블릭 IP"
+  value       = aws_instance.bastion.public_ip
+}
+
+output "bastion_instance_id" {
+  description = "Bastion EC2 인스턴스 ID"
+  value       = aws_instance.bastion.id
+}
+
+# ─── VPC2 + WorkSpaces ────────────────────────────────
+output "vpc2_id" {
+  description = "VPC2 (WorkSpaces) ID"
+  value       = aws_vpc.workspaces.id
+}
+
+output "workspaces_subnet_id" {
+  description = "WorkSpaces 서브넷 ID (AZ-A)"
+  value       = aws_subnet.workspaces.id
+}
+
+output "workspaces_subnet_c_id" {
+  description = "WorkSpaces 서브넷 ID (AZ-C) - AD Connector용"
+  value       = aws_subnet.workspaces_c.id
+}
+
+output "sg_workspaces_id" {
+  description = "WorkSpaces Security Group ID"
+  value       = aws_security_group.workspaces.id
+}
+
+# ─── Security Groups ──────────────────────────────────
+output "sg_bastion_id" {
+  description = "Bastion Security Group ID"
+  value       = aws_security_group.bastion.id
+}
+
+output "sg_alb_id" {
+  description = "ALB Security Group ID"
+  value       = aws_security_group.alb.id
+}
+
+output "sg_eks_id" {
+  description = "EKS Security Group ID"
+  value       = aws_security_group.eks.id
+}
+
+output "sg_main_id" {
+  description = "메인 서버팜 Security Group ID"
+  value       = aws_security_group.main.id
+}
+
+output "sg_monitor_id" {
+  description = "관리망 Security Group ID"
+  value       = aws_security_group.monitor.id
+}
+
+output "sg_devops_id" {
+  description = "DevOps Security Group ID"
+  value       = aws_security_group.devops.id
+}
+
+
+
+
+# ─── Transit Gateway ──────────────────────────────────
+output "tunnel1_ip" { value = aws_vpn_connection.vpn.tunnel1_address }
+output "tunnel1_psk" { 
+  value     = aws_vpn_connection.vpn.tunnel1_preshared_key
+  sensitive = true 
+}
+
+output "bgp_peer1_ip" { value = aws_vpn_connection.vpn.tunnel1_vgw_inside_address }
+output "bgp_local1_ip" { value = aws_vpn_connection.vpn.tunnel1_cgw_inside_address }
+
+output "tunnel2_ip" { value = aws_vpn_connection.vpn.tunnel2_address }
+output "tunnel2_psk" { 
+  value     = aws_vpn_connection.vpn.tunnel2_preshared_key
+  sensitive = true 
+}
+
+output "bgp_peer2_ip" { value = aws_vpn_connection.vpn.tunnel2_vgw_inside_address }
+output "bgp_local2_ip" { value = aws_vpn_connection.vpn.tunnel2_cgw_inside_address }
+
+output "onprem_vpc_cidr" {
+  description = "온프레미스(홈 랩)의 CIDR 대역"
+  value       = var.onprem_vpc_cidr
+}
+# FILE: ./main.tf
+# TODO: Azure 모듈 구현 완료 후 주석 해제
+# provider "azurerm" {
+#   features {}
+#   subscription_id = var.azure_subscription_id
+#   tenant_id       = var.azure_tenant_id
+#   client_id       = var.azure_client_id
+#   client_secret   = var.azure_client_secret
+# }
+
+provider "aws" {
+  region  = var.region
+  #profile = var.profile
+
+  default_tags {
+    tags = {
+      Project   = var.project
+      ManagedBy = "Terraform"
+    }
+  }
+}
+
+# ══════════════════════════════════════════════════════
+# 1. networking (희석) - 항상 먼저 배포
+# ══════════════════════════════════════════════════════
+module "networking" {
+  source = "./modules/networking"
+
+  project  = var.project
+  region   = var.region
+  azs      = var.azs
+  vpc_cidr = var.vpc_cidr
+
+
+  public_subnet_cidrs  = var.public_subnet_cidrs
+  private_eks_cidrs    = var.private_eks_cidrs
+  private_devops_cidr  = var.private_devops_cidr
+  private_main_cidr    = var.private_main_cidr
+  private_monitor_cidr = var.private_monitor_cidr
+
+  bastion_instance_type = var.bastion_instance_type
+  bastion_ami_id        = var.bastion_ami_id
+  bastion_key_name      = var.bastion_key_name
+  allowed_ssh_cidrs     = var.allowed_ssh_cidrs
+  vpn_cidr              = var.vpn_cidr
+
+  vpc2_cidr                = var.vpc2_cidr
+  workspaces_subnet_cidr   = var.workspaces_subnet_cidr
+  workspaces_subnet_cidr_c = var.workspaces_subnet_cidr_c
+
+  #TGW
+  aws_asn         = var.aws_asn
+  onprem_asn      = var.onprem_asn
+  cgw_public_ip   = data.aws_ssm_parameter.cgw_public_ip.value
+  tunnel1_psk     = data.aws_ssm_parameter.tunnel1_psk.value
+  tunnel2_psk     = data.aws_ssm_parameter.tunnel2_psk.value
+  onprem_vpc_cidr = var.vpn_cidr
+}
+
+
+# ══════════════════════════════════════════════════════
+# 2. eks (준수 + 김건) - EKS + Jenkins + GitLab + Fargate
+# ══════════════════════════════════════════════════════
+# TODO: 구현 완료 후 주석 해제
+# module "eks" {
+#   source = "./modules/eks"
+#
+#   project                  = var.project
+#   region                   = var.region
+#   azs                      = var.azs
+#   vpc_id                   = module.networking.vpc_id
+#   private_eks_subnet_ids   = module.networking.private_eks_subnet_ids
+#   sg_eks_id                = module.networking.sg_eks_id
+#   private_devops_subnet_id = module.networking.private_devops_subnet_id
+#   sg_devops_id             = module.networking.sg_devops_id
+#
+#   cluster_version       = var.eks_cluster_version
+#   node_instance_type    = var.eks_node_instance_type
+#   node_desired_size     = var.eks_node_desired_size
+#   node_min_size         = var.eks_node_min_size
+#   node_max_size         = var.eks_node_max_size
+#   jenkins_instance_type = var.jenkins_instance_type
+#   gitlab_instance_type  = var.gitlab_instance_type
+#   ami_id                = var.bastion_ami_id
+#   bastion_key_name      = var.bastion_key_name
+# }
+
+# ══════════════════════════════════════════════════════
+# 3. auth (준환) - Lambda + API Gateway + IAM
+# ══════════════════════════════════════════════════════
+# TODO: 구현 완료 후 주석 해제
+# module "auth" {
+#   source = "./modules/auth"
+#
+#   project                = var.project
+#   region                 = var.region
+#   vpc_id                 = module.networking.vpc_id
+#   private_main_subnet_id = module.networking.private_main_subnet_id
+#   sg_main_id             = module.networking.sg_main_id
+# }
+
+# ══════════════════════════════════════════════════════
+# 4. rds (미정) - RDS + Kafka
+# ══════════════════════════════════════════════════════
+# TODO: 구현 완료 후 주석 해제
+# module "rds" {
+#   source = "./modules/rds"
+#
+#   project                = var.project
+#   vpc_id                 = module.networking.vpc_id
+#   private_main_subnet_id = module.networking.private_main_subnet_id
+#   sg_main_id             = module.networking.sg_main_id
+#
+#   db_name              = var.db_name
+#   db_username          = var.db_username
+#   db_password          = var.db_password
+#   db_instance_class    = var.db_instance_class
+#   db_allocated_storage = var.db_allocated_storage
+#   db_engine_version    = var.db_engine_version
+#   multi_az             = var.db_multi_az
+# }
+
+# ══════════════════════════════════════════════════════
+# 5. monitoring (미정) - Prometheus + Grafana + OpenSearch
+# ══════════════════════════════════════════════════════
+# TODO: 구현 완료 후 주석 해제
+# module "monitoring" {
+#   source = "./modules/monitoring"
+#
+#   project                   = var.project
+#   vpc_id                    = module.networking.vpc_id
+#   private_monitor_subnet_id = module.networking.private_monitor_subnet_id
+#   sg_monitor_id             = module.networking.sg_monitor_id
+#   bastion_key_name          = var.bastion_key_name
+#   ami_id                    = var.bastion_ami_id
+#   prometheus_instance_type  = var.prometheus_instance_type
+#   opensearch_instance_type  = var.opensearch_instance_type
+# }
+
+# ══════════════════════════════════════════════════════
+# 6. workspaces (우열) - WorkSpaces VDI
+# ══════════════════════════════════════════════════════
+# TODO: 구현 완료 후 주석 해제
+# module "workspaces" {
+#   source = "./modules/workspaces"
+#
+#   project                = var.project
+#   vpc2_id                = module.networking.vpc2_id
+#   workspaces_subnet_id   = module.networking.workspaces_subnet_id
+#   workspaces_subnet_c_id = module.networking.workspaces_subnet_c_id
+#   sg_workspaces_id       = module.networking.sg_workspaces_id
+#
+#   ad_directory_id     = var.ad_directory_id
+#   workspace_bundle_id = var.workspace_bundle_id
+# }
+
+# ══════════════════════════════════════════════════════
+# 7. azure (희석) - AKS + VNet + VPN + Route53 DR
+# ══════════════════════════════════════════════════════
+# TODO: azurerm provider 주석 해제 후 함께 활성화
+# module "azure" {
+#   source = "./modules/azure"
+#
+#   project  = var.project
+#   location = var.azure_location
+#
+#   vnet_cidr           = var.azure_vnet_cidr
+#   aks_subnet_cidr     = var.azure_aks_subnet_cidr
+#   gateway_subnet_cidr = var.azure_gateway_subnet_cidr
+#
+#   aks_node_count         = var.azure_aks_node_count
+#   aks_node_vm_size       = var.azure_aks_node_vm_size
+#   aks_kubernetes_version = var.eks_cluster_version
+#
+#   aws_vpc_cidr       = var.vpc_cidr
+#   aws_vpn_gateway_ip = var.aws_vpn_gateway_ip
+#   vpn_shared_key     = var.vpn_shared_key
+#
+#   domain_name = var.domain_name
+#   aws_alb_dns = var.aws_alb_dns
+# }
+
+# FILE: ./scripts/setup_vpn.sh
+#!/bin/bash
+# scripts/setup_vpn.sh
+
+set -e # 에러 발생 시 즉시 중단
+
+echo "1. AWS SSM에서 Online 상태의 인스턴스를 찾는 중..."
+INSTANCE_ID=""
+
+for i in {1..15}; do
+  # AWS CLI 페이징 버그 방지를 위해 grep 사용
+  RAW_ID=$(aws ssm describe-instance-information --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text | grep -o 'mi-[0-9a-f]*' | head -n 1)
+  
+  if [ -n "$RAW_ID" ]; then
+    INSTANCE_ID=$RAW_ID
+    echo "✅ 인스턴스 인식 성공: $INSTANCE_ID"
+    break
+  fi
+  echo "⏳ 대기 중 ($i/15)... 20초 후 다시 시도합니다."
+  sleep 20
+done
+
+if [ -z "$INSTANCE_ID" ]; then
+  echo "❌ 오류: 5분을 기다렸으나 Online 상태의 노드를 찾지 못했습니다."
+  exit 1
+fi
+
+# 2. 파워쉘 스크립트 조립 (환경 변수로부터 값을 주입받음)
+cat <<EOF > final_script.ps1
+\$AwsVpcCidr = "$AWS_VPC_CIDR"
+\$OnpremVpcCidr = "$ONPREM_VPC_CIDR"
+\$Tunnel1Ip = "$TUNNEL1_IP"
+\$Tunnel1Psk = "$TUNNEL1_PSK"
+\$BgpPeer1Ip = "$BGP_PEER1_IP"
+\$BgpLocal1Ip = "$BGP_LOCAL1_IP"
+\$Tunnel2Ip = "$TUNNEL2_IP"
+\$Tunnel2Psk = "$TUNNEL2_PSK"
+\$BgpPeer2Ip = "$BGP_PEER2_IP"
+\$BgpLocal2Ip = "$BGP_LOCAL2_IP"
+EOF
+
+# 메인 셋업 로직 결합
+cat ./scripts/vpn_bgp_setup.ps1 >> final_script.ps1
+
+B64_SCRIPT=$(cat final_script.ps1 | base64 -w 0)
+EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
+
+# 3. SSM 명령 전송
+echo "2. 스크립트 전송 중..."
+COMMAND_ID=$(aws ssm send-command \
+  --document-name "AWS-RunPowerShellScript" \
+  --targets "Key=InstanceIds,Values=$INSTANCE_ID" \
+  --parameters "commands=[\"$EXEC_CMD\"]" \
+  --timeout-seconds 600 \
+  --query "Command.CommandId" \
+  --output text)
+
+echo "명령 전송 완료. Command ID: $COMMAND_ID"
+echo "⏳ 윈도우 RRAS 엔진 구성 및 BGP 세션 확립 대기 중 (최대 10분)..."
+
+# 4. 롱폴링(Long-Polling) 대기 로직
+ATTEMPTS=0
+MAX_ATTEMPTS=60
+
+while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+  STATUS=$(aws ssm list-command-invocations \
+    --command-id $COMMAND_ID \
+    --details \
+    --query "CommandInvocations[0].Status" \
+    --output text)
+  
+  echo "Current Status: $STATUS ($ATTEMPTS/$MAX_ATTEMPTS)"
+  
+  if [ "$STATUS" == "Success" ]; then
+    echo "✅ 모든 설정이 성공적으로 완료되었습니다!"
+    exit 0
+  elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "Cancelled" ] || [ "$STATUS" == "TimedOut" ]; then
+    echo "❌ 명령 실행 실패! (SSM 콘솔을 확인하세요)"
+    exit 1
+  fi
+  
+  sleep 10
+  ATTEMPTS=$((ATTEMPTS + 1)) # 안전한 산술 연산
+done
+
+echo "❌ 대기 시간 초과!"
+exit 1
+# FILE: ./scripts/cleanup_vpn.sh
+#!/bin/bash
+# scripts/cleanup_vpn.sh
+
+# 온라인 상태인 인스턴스 ID 추출
+INSTANCE_ID=$(aws ssm describe-instance-information \
+  --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" \
+  --output text | grep -o 'mi-[a-f0-9]*' | head -n 1)
+
+if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ] && [ "$INSTANCE_ID" != "null" ]; then
+  echo "✅ 온프레미스 서버($INSTANCE_ID)를 발견했습니다. 초기화 명령을 전송합니다."
+  
+  # Cleanup 파워쉘 스크립트 로드 및 인코딩
+  B64_SCRIPT=$(cat ./scripts/vpn_bgp_cleanup.ps1 | base64 -w 0)
+  EXEC_CMD="[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$B64_SCRIPT')) | Invoke-Expression"
+  
+  # 비동기 명령 전송 (Fire and Forget)
+  COMMAND_ID=$(aws ssm send-command \
+    --document-name "AWS-RunPowerShellScript" \
+    --targets "Key=InstanceIds,Values=$INSTANCE_ID" \
+    --parameters "commands=[\"$EXEC_CMD\"]" \
+    --query "Command.CommandId" \
+    --output text)
+    
+  echo "🚀 스크립트 전송 완료 (Command ID: $COMMAND_ID)"
+  echo "윈도우 서버가 백그라운드에서 초기화를 진행하는 동안 다음 단계를 진행합니다."
+  
+  # SSM 인스턴스 등록 해제
+  aws ssm deregister-managed-instance --instance-id "$INSTANCE_ID"
+  echo "✅ AWS SSM 인스턴스($INSTANCE_ID) 등록 해제 완료."
+
+else
+  echo "ℹ️ 온라인 상태인 서버를 찾을 수 없어 내부 초기화를 건너뜁니다."
+fi

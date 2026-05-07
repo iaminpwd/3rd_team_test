@@ -3,22 +3,20 @@
 # =================================================================
 $ErrorActionPreference = "Stop"
 
-# [직접 입력] 변수 주입 대신 하드코딩으로 설정
-$AwsVpcCidr = "10.0.0.0/16"
-$OnpremVpcCidr = "192.168.0.0/24"
 
 # 0. 필수 기능 및 방화벽 설정
 Write-Host "0. 필수 기능 및 방화벽 설정 중..." -ForegroundColor Cyan
 Install-WindowsFeature -Name RemoteAccess, Routing, DirectAccess-VPN -IncludeManagementTools -ErrorAction SilentlyContinue
 
-# 1. RRAS 라우팅 엔진 안전 기동 및 초기화
+# 1. RRAS 라우팅 엔진 안전 기동 및 프로비저닝 (현업 표준)
 Write-Host "1. RRAS 라우팅 엔진 안전 기동 및 초기화 중..." -ForegroundColor Cyan
-$regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
-try { Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force } catch {}
 
+# 레지스트리 조작 대신 공식 Cmdlet으로 S2S VPN 및 LAN 라우팅 엔진 구성
+Install-RemoteAccess -VpnType VpnS2S -ErrorAction SilentlyContinue
+
+# 서비스 자동 실행 등록 및 기동
 Set-Service -Name RemoteAccess -StartupType Automatic
 try { Start-Service RemoteAccess -ErrorAction SilentlyContinue } catch {}
-
 # 엔진 준비 대기
 $retryCount = 0
 while ($retryCount -lt 15) {
@@ -80,12 +78,24 @@ foreach ($p in $peers) {
 Write-Host "4. BGP 경로 광고 중 ($OnpremVpcCidr)..." -ForegroundColor Cyan
 try { Add-BgpCustomRoute -Network $OnpremVpcCidr -ErrorAction Stop } catch {}
 
-# 5. 인터넷 경로 보호 (서열 정리)
+# 5. 인터넷 경로 보호
 Write-Host "5. 인터넷 경로 보호 중..." -ForegroundColor Cyan
-$eth = Get-NetAdapter | Where-Object Status -eq "Up" | Select-Object -First 1
-if ($eth) {
-    Set-NetIPInterface -InterfaceAlias $eth.Name -InterfaceMetric 10
-    route add 0.0.0.0 mask 0.0.0.0 192.168.0.1 metric 10 if (Get-NetAdapter -Name $eth.Name).InterfaceIndex
-}
+# 상태가 Up인 실제 물리/가상 이더넷 어댑터 탐색
+$eth = Get-NetAdapter | Where-Object Status -eq "Up" | Where-Object Name -NotMatch "Tunnel" | Select-Object -First 1
 
-Write-Host "✅ 모든 설정 완료!" -ForegroundColor Green
+if ($eth) {
+    # 1. 인터페이스 메트릭 조정
+    Set-NetIPInterface -InterfaceAlias $eth.Name -InterfaceMetric 10
+    
+    # 2. 동적으로 기본 게이트웨이 IP 추출 (하드코딩 192.168.0.1 제거)
+    $defaultGateway = (Get-NetIPConfiguration -InterfaceAlias $eth.Name).IPv4DefaultGateway.NextHop
+    
+    if ($defaultGateway) {
+        # 3. 파워쉘 네이티브 명령어로 멱등성 보장 라우팅 추가
+        try { 
+            New-NetRoute -DestinationPrefix "0.0.0.0/0" -InterfaceAlias $eth.Name -NextHop $defaultGateway -RouteMetric 10 -ErrorAction Stop 
+        } catch {
+            Write-Host "기본 경로가 이미 존재하거나 설정할 수 없습니다. (정상)" -ForegroundColor Gray
+        }
+    }
+}

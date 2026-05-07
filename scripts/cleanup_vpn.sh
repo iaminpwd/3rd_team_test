@@ -23,10 +23,7 @@ if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ] && [ "$INSTANCE_ID" != 
     
   echo "🚀 스크립트 전송 완료 (Command ID: $COMMAND_ID)"
   echo "윈도우 서버가 백그라운드에서 초기화를 진행하는 동안 다음 단계를 진행합니다."
-  
-  # SSM 인스턴스 등록 해제
-  aws ssm deregister-managed-instance --instance-id "$INSTANCE_ID"
-  echo "✅ AWS SSM 인스턴스($INSTANCE_ID) 등록 해제 완료."
+
 
 else
   echo "ℹ️ 온라인 상태인 서버를 찾을 수 없어 내부 초기화를 건너뜁니다."
