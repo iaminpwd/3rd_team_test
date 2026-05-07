@@ -1,30 +1,4 @@
 # ---------------------------------------------------------
-# VPC 및 기본 네트워크 구성
-# ---------------------------------------------------------
-resource "aws_vpc" "aws_vpc" {
-  cidr_block           = var.vpc_cidr
-  enable_dns_hostnames = true
-  tags = { Name = "VPC-A-AWS-Cloud" }
-}
-
-resource "aws_subnet" "aws_subnet" {
-  vpc_id            = aws_vpc.aws_vpc.id
-  cidr_block        = cidrsubnet(var.vpc_cidr, 8, 1)
-  availability_zone = "${var.region}a"
-  tags = { Name = "Subnet-A-AWS" }
-}
-
-resource "aws_route_table" "aws_rt" {
-  vpc_id = aws_vpc.aws_vpc.id
-  tags = { Name = "RT-A-AWS" }
-}
-
-resource "aws_route_table_association" "aws_rt_assoc" {
-  subnet_id      = aws_subnet.aws_subnet.id
-  route_table_id = aws_route_table.aws_rt.id
-}
-
-# ---------------------------------------------------------
 # 하이브리드 커넥티비티 (TGW + CGW + VPN)
 # ---------------------------------------------------------
 resource "aws_ec2_transit_gateway" "tgw" {
@@ -36,17 +10,11 @@ resource "aws_ec2_transit_gateway" "tgw" {
 }
 
 resource "aws_ec2_transit_gateway_vpc_attachment" "tgw_attach_vpc_a" {
-  subnet_ids         = [aws_subnet.private_devops.id, aws_subnet.aws_subnet.id]
+  # 반드시 '진짜 메인 VPC'에 속한 서브넷들만 넣어야 합니다!
+  subnet_ids         = [aws_subnet.private_devops.id, aws_subnet.private_main.id]
   transit_gateway_id = aws_ec2_transit_gateway.tgw.id
   vpc_id             = aws_vpc.main.id
   tags = { Name = "TGW-Attach-VPC-A" }
-}
-
-resource "aws_route" "aws_to_onprem" {
-  route_table_id         = aws_route_table.aws_rt.id
-  destination_cidr_block = var.onprem_vpc_cidr
-  transit_gateway_id     = aws_ec2_transit_gateway.tgw.id
-  depends_on             = [aws_ec2_transit_gateway_vpc_attachment.tgw_attach_vpc_a]
 }
 
 resource "aws_customer_gateway" "cgw" {
@@ -68,7 +36,6 @@ resource "aws_vpn_connection" "vpn" {
   
   tunnel2_preshared_key = var.tunnel2_psk
   tunnel2_inside_cidr   = "169.254.254.128/30"
-  
   
   depends_on = [
     aws_customer_gateway.cgw,
