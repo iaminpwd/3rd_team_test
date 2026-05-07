@@ -65,6 +65,7 @@ foreach ($t in $tunnels) {
     # 가상 어댑터에 /30 IP 할당 (여기서 BGP 피어 통신 경로가 자동으로 생성됨)
     try { New-NetIPAddress -InterfaceAlias $t.Name -IPAddress $t.LocalIP -PrefixLength 30 -AddressFamily IPv4 -ErrorAction Stop } catch {}
 }
+  
 
 # 3. BGP 라우터 및 Peer 구성
 Write-Host "3. BGP 설정 중..." -ForegroundColor Cyan
