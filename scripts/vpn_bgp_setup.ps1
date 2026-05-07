@@ -3,6 +3,9 @@
 # =================================================================
 $ErrorActionPreference = "Stop"
 
+# ⭐ [핵심 수정] 스크립트 시작 즉시, 네트워크가 가장 안정적일 때 로컬 IP 미리 확보
+$myIp = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null }).IPv4Address.IPAddress | Select-Object -First 1
+Write-Host "BGP Router ID로 사용할 로컬 IP 확보 완료: $myIp" -ForegroundColor Green
 
 # 0. 필수 기능 및 방화벽 설정
 Write-Host "0. 필수 기능 및 방화벽 설정 중..." -ForegroundColor Cyan
@@ -17,6 +20,7 @@ Install-RemoteAccess -VpnType VpnS2S -ErrorAction SilentlyContinue
 # 서비스 자동 실행 등록 및 기동
 Set-Service -Name RemoteAccess -StartupType Automatic
 try { Start-Service RemoteAccess -ErrorAction SilentlyContinue } catch {}
+
 # 엔진 준비 대기
 $retryCount = 0
 while ($retryCount -lt 15) {
@@ -36,7 +40,7 @@ try { Get-BgpPeer | Remove-BgpPeer -Force -ErrorAction SilentlyContinue } catch 
 try { Remove-BgpRouter -Force -ErrorAction SilentlyContinue } catch {}
 try { Enable-RemoteAccessRoutingDomain -Custom -PassThru -ErrorAction SilentlyContinue } catch {}
 
-# 2. VPN 인터페이스 구성 (Split Tunneling - 타겟 AWS VPC 대역만 정확히 라우팅)
+# 2. VPN 인터페이스 구성 (현업 표준: Narrow TS 강제 협상 및 BGP 정책 허용)
 Write-Host "2. VPN 인터페이스 구성 중..." -ForegroundColor Cyan
 $tunnels = @(
     @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; Metric="100"; LocalIP=$BgpLocal1Ip; PeerIP=$BgpPeer1Ip },
@@ -46,10 +50,14 @@ $tunnels = @(
 foreach ($t in $tunnels) {
     Write-Host "[$($t.Name)] 생성 중..."
     
-    # [수정됨] 0.0.0.0/0 이나 잘못된 사설망 전체가 아닌, 주입받은 정확한 AWS 대상 대역($AwsVpcCidr)만 VPN으로 넘김
-    $awsTargetSubnet = "$AwsVpcCidr:$($t.Metric)"
+    # AWS VPC 대역($AwsVpcCidr)과 BGP 통신 대역(169.254.0.0/16)을 배열로 동시 주입
+    # 이 배열이 IPsec TS가 되어 인터넷 하이재킹을 차단하고 BGP 패킷 드랍을 방지합니다.
+    $awsTargetSubnets = @(
+        "$AwsVpcCidr:$($t.Metric)",
+        "169.254.0.0/16:$($t.Metric)"
+    )
     
-    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet $awsTargetSubnet -Protocol IKEv2 -ErrorAction Stop
+    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet $awsTargetSubnets -Protocol IKEv2 -ErrorAction Stop
     
     try { Connect-VpnS2SInterface -Name $t.Name -ErrorAction Stop } catch {}
     Start-Sleep -Seconds 5
@@ -60,8 +68,8 @@ foreach ($t in $tunnels) {
 
 # 3. BGP 라우터 및 Peer 구성
 Write-Host "3. BGP 설정 중..." -ForegroundColor Cyan
-$myIp = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null }).IPv4Address.IPAddress | Select-Object -First 1
 
+# 상단에서 미리 구해둔 $myIp 변수 활용
 try {
     Add-BgpRouter -BgpIdentifier $myIp -LocalASN 65000 -ErrorAction Stop
 } catch {
@@ -77,28 +85,33 @@ foreach ($p in $peers) {
     try { Start-BgpPeer -Name $p.Name -ErrorAction Stop } catch {}
 }
 
-# 4. BGP 경로 광고 (하드코딩된 변수 사용)
+# 4. BGP 경로 광고 (동적 변수 사용)
 Write-Host "4. BGP 경로 광고 중 ($OnpremVpcCidr)..." -ForegroundColor Cyan
 try { Add-BgpCustomRoute -Network $OnpremVpcCidr -ErrorAction Stop } catch {}
 
 # 5. 인터넷 경로 보호
 Write-Host "5. 인터넷 경로 보호 중..." -ForegroundColor Cyan
-# 상태가 Up인 실제 물리/가상 이더넷 어댑터 탐색
-$eth = Get-NetAdapter | Where-Object Status -eq "Up" | Where-Object Name -NotMatch "Tunnel" | Select-Object -First 1
 
-if ($eth) {
-    # 1. 인터페이스 메트릭 조정
-    Set-NetIPInterface -InterfaceAlias $eth.Name -InterfaceMetric 10
+# 가상 어댑터 우회: 실제 활성화된 0.0.0.0/0 인터넷 경로를 가진 어댑터를 역추적
+$activeInternetRoute = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1
+
+if ($activeInternetRoute) {
+    $eth = Get-NetAdapter -InterfaceIndex $activeInternetRoute.InterfaceIndex -ErrorAction SilentlyContinue
+    $defaultGateway = $activeInternetRoute.NextHop
     
-    # 2. 동적으로 기본 게이트웨이 IP 추출 (하드코딩 192.168.0.1 제거)
-    $defaultGateway = (Get-NetIPConfiguration -InterfaceAlias $eth.Name).IPv4DefaultGateway.NextHop
-    
-    if ($defaultGateway) {
-        # 3. 파워쉘 네이티브 명령어로 멱등성 보장 라우팅 추가
+    if ($eth -and $defaultGateway) {
+        Write-Host "인터넷 어댑터 인식 완료: $($eth.Name), 게이트웨이: $defaultGateway" -ForegroundColor Green
+        
+        # 1. 인터페이스 메트릭 절대 우위 설정
+        Set-NetIPInterface -InterfaceAlias $eth.Name -InterfaceMetric 5
+        
+        # 2. 기존 인터넷 경로 보호 덮어쓰기
         try { 
-            New-NetRoute -DestinationPrefix "0.0.0.0/0" -InterfaceAlias $eth.Name -NextHop $defaultGateway -RouteMetric 10 -ErrorAction Stop 
-        } catch {
-            Write-Host "기본 경로가 이미 존재하거나 설정할 수 없습니다. (정상)" -ForegroundColor Gray
-        }
+            Set-NetRoute -DestinationPrefix "0.0.0.0/0" -InterfaceAlias $eth.Name -NextHop $defaultGateway -RouteMetric 5 -ErrorAction SilentlyContinue 
+        } catch {}
     }
+} else {
+    Write-Host "활성화된 인터넷 기본 경로를 찾을 수 없습니다." -ForegroundColor Yellow
 }
+
+Write-Host "✅ 모든 설정 완료!" -ForegroundColor Green
