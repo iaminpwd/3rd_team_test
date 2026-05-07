@@ -20,39 +20,55 @@ foreach ($rule in $fwRules) {
     } catch {}
 }
 
-# 1. RRAS 엔진 기동 및 기존 설정 초기화 (순서 완벽 교정본)
+# 1. RRAS 엔진 기동 및 기존 설정 초기화 (지연 시간 대응 강화 버전)
 Write-Host "1. RRAS 라우팅 엔진 기동 및 초기화 중..." -ForegroundColor Cyan
 
 # 레지스트리 설정 (VPN 및 LAN 라우팅 활성화)
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters"
 try { Set-ItemProperty -Path $regPath -Name "RouterType" -Value 7 -Force } catch {}
 
-Write-Host "라우팅 서비스 시작 중..." -ForegroundColor Yellow
-try { Start-Service RemoteAccess -ErrorAction SilentlyContinue } catch {}
+# 서비스가 중지되어 있다면 시작, 이미 켜져 있다면 상태 확인
+Write-Host "라우팅 서비스 상태 확인 및 시작..." -ForegroundColor Yellow
+$svc = Get-Service RemoteAccess
+if ($svc.Status -ne 'Running') {
+    Start-Service RemoteAccess
+}
 
-# [핵심 1] 청소하기 전에 라우팅 엔진이 완전히 켜질 때까지 기다립니다.
+# [핵심 교정] Get-RemoteAccess 대신 실제로 에러가 났던 Get-VpnS2SInterface로 체크합니다.
+# 이 명령어가 성공해야 진짜로 명령을 내릴 준비가 된 것입니다.
 $retry = 0
-while ($retry -lt 12) {
+$engineReady = $false
+while ($retry -lt 15) {
     try {
-        $null = Get-RemoteAccess -ErrorAction Stop
+        # 실제로 핑(Ping) 역할을 할 명령어를 던져봅니다.
+        $null = Get-VpnS2SInterface -ErrorAction Stop
+        $engineReady = $true
+        Write-Host "▶ 라우팅 엔진 내부 모듈 로드 완료!" -ForegroundColor Green
         break
     } catch {
-        Write-Host "⏳ 엔진 활성화 대기 중... ($($retry * 5)초)" -ForegroundColor Gray
+        Write-Host "⏳ 라우팅 엔진 내부 모듈 로딩 대기 중... ($($retry * 5)초)" -ForegroundColor Gray
         Start-Sleep -Seconds 5
         $retry++
     }
 }
 
-Write-Host "기존 VPN 및 BGP 찌꺼기 초기화 중..." -ForegroundColor Yellow
-# [핵심 2] 이제 엔진이 켜져 있으므로 에러 없이 안전하게 삭제됩니다.
-try { Get-VpnS2SInterface -ErrorAction Stop | Remove-VpnS2SInterface -Force -ErrorAction Stop } catch {}
-try { Get-BgpPeer -ErrorAction Stop | Remove-BgpPeer -Force -ErrorAction Stop } catch {}
-try { Remove-BgpRouter -Force -ErrorAction Stop } catch {}
+if (-not $engineReady) {
+    throw "오류: 라우팅 엔진이 75초 이내에 응답하지 않습니다. 서버 상태를 확인하세요."
+}
 
-Write-Host "초기화 반영을 위해 서비스 깔끔하게 재시작..." -ForegroundColor Yellow
-Restart-Service RemoteAccess -Force
+# 추가 안정화 시간 (WMI 객체 확정)
 Start-Sleep -Seconds 5
-Write-Host "▶ 라우팅 엔진 가동 완료!" -ForegroundColor Green
+
+Write-Host "기존 VPN 및 BGP 찌꺼기 초기화 중..." -ForegroundColor Yellow
+# 이제 엔진이 확실히 준비되었으므로 에러 없이 실행됩니다.
+try { Get-VpnS2SInterface -ErrorAction SilentlyContinue | Remove-VpnS2SInterface -Force -ErrorAction SilentlyContinue } catch {}
+try { Get-BgpPeer -ErrorAction SilentlyContinue | Remove-BgpPeer -Force -ErrorAction SilentlyContinue } catch {}
+try { Remove-BgpRouter -Force -ErrorAction SilentlyContinue } catch {}
+
+Write-Host "초기화 반영을 위해 서비스 재시작..." -ForegroundColor Yellow
+Restart-Service RemoteAccess -Force
+Start-Sleep -Seconds 10 # 재시작 후 안정화 시간
+Write-Host "▶ 라우팅 엔진 초기화 및 가동 완료!" -ForegroundColor Green
 
 # 2. VPN 인터페이스 및 라우팅 구성 (순서 교정 완료)
 Write-Host "2. VPN 인터페이스 및 경로 구성 중..." -ForegroundColor Cyan
