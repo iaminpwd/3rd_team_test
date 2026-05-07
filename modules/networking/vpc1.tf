@@ -187,3 +187,13 @@ resource "aws_route_table_association" "private_monitor" {
   subnet_id      = aws_subnet.private_monitor.id
   route_table_id = aws_route_table.private.id
 }
+
+
+# ══════════════════════════════════════════════════════
+# 퍼블릭 서브넷 라우팅 테이블 연결 (Bastion을 위해 필수!)
+# ══════════════════════════════════════════════════════
+resource "aws_route_table_association" "public" {
+  count          = length(aws_subnet.public)
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
