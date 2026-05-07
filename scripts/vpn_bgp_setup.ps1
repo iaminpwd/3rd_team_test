@@ -52,8 +52,9 @@ foreach ($t in $tunnels) {
     
     # AWS VPC 대역($AwsVpcCidr)과 BGP 통신 대역(169.254.0.0/16)을 배열로 동시 주입
     # 이 배열이 IPsec TS가 되어 인터넷 하이재킹을 차단하고 BGP 패킷 드랍을 방지합니다.
+    # 변수명을 중괄호 ${}로 감싸서 콜론(:)과 완벽하게 분리합니다.
     $awsTargetSubnets = @(
-        "$AwsVpcCidr:$($t.Metric)",
+        "${AwsVpcCidr}:$($t.Metric)",
         "169.254.0.0/16:$($t.Metric)"
     )
     
