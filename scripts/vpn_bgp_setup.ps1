@@ -36,7 +36,7 @@ try { Get-BgpPeer | Remove-BgpPeer -Force -ErrorAction SilentlyContinue } catch 
 try { Remove-BgpRouter -Force -ErrorAction SilentlyContinue } catch {}
 try { Enable-RemoteAccessRoutingDomain -Custom -PassThru -ErrorAction SilentlyContinue } catch {}
 
-# 2. VPN 인터페이스 구성 (Metric을 높여 인터넷 하이재킹 방지)
+# 2. VPN 인터페이스 구성 (Split Tunneling - 타겟 AWS VPC 대역만 정확히 라우팅)
 Write-Host "2. VPN 인터페이스 구성 중..." -ForegroundColor Cyan
 $tunnels = @(
     @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; Metric="100"; LocalIP=$BgpLocal1Ip; PeerIP=$BgpPeer1Ip },
@@ -45,8 +45,11 @@ $tunnels = @(
 
 foreach ($t in $tunnels) {
     Write-Host "[$($t.Name)] 생성 중..."
-    # 하드코딩된 $AwsVpcCidr 대신 0.0.0.0/0을 열어 확장성 유지
-    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet "0.0.0.0/0:$($t.Metric)" -Protocol IKEv2 -ErrorAction Stop
+    
+    # [수정됨] 0.0.0.0/0 이나 잘못된 사설망 전체가 아닌, 주입받은 정확한 AWS 대상 대역($AwsVpcCidr)만 VPN으로 넘김
+    $awsTargetSubnet = "$AwsVpcCidr:$($t.Metric)"
+    
+    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet $awsTargetSubnet -Protocol IKEv2 -ErrorAction Stop
     
     try { Connect-VpnS2SInterface -Name $t.Name -ErrorAction Stop } catch {}
     Start-Sleep -Seconds 5
