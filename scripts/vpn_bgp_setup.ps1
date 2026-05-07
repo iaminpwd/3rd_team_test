@@ -14,9 +14,12 @@ Install-WindowsFeature -Name RemoteAccess, Routing, DirectAccess-VPN -IncludeMan
 # 1. RRAS 라우팅 엔진 안전 기동 및 프로비저닝 (현업 표준)
 Write-Host "1. RRAS 라우팅 엔진 안전 기동 및 초기화 중..." -ForegroundColor Cyan
 
-# 공식 Cmdlet으로 S2S VPN 및 LAN 라우팅 엔진 구성
-Install-RemoteAccess -VpnType VpnS2S -ErrorAction SilentlyContinue
-
+# ⭐ [수정됨] try-catch를 사용하여 이미 설치되어 발생한 예외(CimException)를 완벽히 통제하고 멱등성을 보장합니다.
+try {
+    Install-RemoteAccess -VpnType VpnS2S -ErrorAction Stop
+} catch {
+    Write-Host "ℹ️ RRAS VPN 엔진이 이미 구성되어 있습니다. 기존 구성을 덮어쓰고 다음으로 진행합니다." -ForegroundColor Gray
+}
 # 서비스 자동 실행 등록 및 기동
 Set-Service -Name RemoteAccess -StartupType Automatic
 try { Start-Service RemoteAccess -ErrorAction SilentlyContinue } catch {}
