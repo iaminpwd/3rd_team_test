@@ -43,33 +43,27 @@ try { Get-BgpPeer | Remove-BgpPeer -Force -ErrorAction SilentlyContinue } catch 
 try { Remove-BgpRouter -Force -ErrorAction SilentlyContinue } catch {}
 try { Enable-RemoteAccessRoutingDomain -Custom -PassThru -ErrorAction SilentlyContinue } catch {}
 
-# 2. VPN 인터페이스 구성 (현업 표준: Narrow TS 및 Host Route 강제 주입)
+# 2. VPN 인터페이스 구성 (현업 표준: 타겟 VPC 대역만 TS로 주입)
 Write-Host "2. VPN 인터페이스 구성 중..." -ForegroundColor Cyan
 $tunnels = @(
-    @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; LocalIP=$BgpLocal1Ip; PeerIP=$BgpPeer1Ip; Metric="100" },
-    @{ Name="AWS-TGW-Tunnel2"; Dest=$Tunnel2Ip; Psk=$Tunnel2Psk; LocalIP=$BgpLocal2Ip; PeerIP=$BgpPeer2Ip; Metric="150" }
+    @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; Metric="100"; LocalIP=$BgpLocal1Ip; PeerIP=$BgpPeer1Ip },
+    @{ Name="AWS-TGW-Tunnel2"; Dest=$Tunnel2Ip; Psk=$Tunnel2Psk; Metric="150"; LocalIP=$BgpLocal2Ip; PeerIP=$BgpPeer2Ip }
 )
 
 foreach ($t in $tunnels) {
     Write-Host "[$($t.Name)] 생성 중..."
     
-    # ⭐ [핵심 수정] 문제가 된 파라미터를 지우고, 원래의 -IPv4Subnet 방식으로 돌아갑니다.
-    # 단, 인터넷(0.0.0.0/0)이나 APIPA(169.254.x.x) 대신, AWS 피어(Peer)의 단일 IP(/32)를 명시적으로 주입합니다.
-    # 이렇게 하면 파워쉘 버전 오류나 169.254 거부 에러를 완벽히 우회하면서 BGP 터널을 뚫을 수 있습니다.
-    $awsTargetSubnets = @(
-        "${AwsVpcCidr}:$($t.Metric)",
-        "$($t.PeerIP)/32:$($t.Metric)"
-    )
+    # ⭐ [핵심 해결] OS 제한이 걸린 169.254 대역을 빼고, 실제 라우팅 대상인 AWS VPC 대역만 문자열로 명확히 주입합니다.
+    # 이렇게 하면 윈도우 RRAS 에러를 우회하면서 터널이 뚫리고, 인터넷 하이재킹(0.0.0.0/0)도 방지됩니다.
+    $awsTargetSubnet = "${AwsVpcCidr}:$($t.Metric)"
     
-    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet $awsTargetSubnets -Protocol IKEv2 -ErrorAction Stop
+    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet $awsTargetSubnet -Protocol IKEv2 -ErrorAction Stop
     
     try { Connect-VpnS2SInterface -Name $t.Name -ErrorAction Stop } catch {}
     Start-Sleep -Seconds 5
 
+    # 가상 어댑터에 /30 IP 할당 (여기서 BGP 피어 통신 경로가 자동으로 생성됨)
     try { New-NetIPAddress -InterfaceAlias $t.Name -IPAddress $t.LocalIP -PrefixLength 30 -AddressFamily IPv4 -ErrorAction Stop } catch {}
-    
-    # BGP 통신을 위한 라우팅 테이블 수동 밀어넣기
-    try { New-NetRoute -DestinationPrefix "$($t.PeerIP)/32" -InterfaceAlias $t.Name -RouteMetric $t.Metric -ErrorAction Stop } catch {}
 }
 
 # 3. BGP 라우터 및 Peer 구성
