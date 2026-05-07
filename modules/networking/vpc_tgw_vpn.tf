@@ -2,15 +2,15 @@
 # VPC 및 기본 네트워크 구성
 # ---------------------------------------------------------
 resource "aws_vpc" "aws_vpc" {
-  cidr_block           = var.aws_vpc_cidr
+  cidr_block           = var.vpc_cidr
   enable_dns_hostnames = true
   tags = { Name = "VPC-A-AWS-Cloud" }
 }
 
 resource "aws_subnet" "aws_subnet" {
   vpc_id            = aws_vpc.aws_vpc.id
-  cidr_block        = cidrsubnet(var.aws_vpc_cidr, 8, 1)
-  availability_zone = "${var.aws_region}a"
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, 1)
+  availability_zone = "${var.region}a"
   tags = { Name = "Subnet-A-AWS" }
 }
 
@@ -69,7 +69,7 @@ resource "aws_vpn_connection" "vpn" {
   tunnel2_preshared_key = var.tunnel2_psk
   tunnel2_inside_cidr   = "169.254.254.128/30"
   
-  # [추가됨] 명시적 의존성 주입으로 순서 꼬임 및 유령 ID 참조 방지
+  
   depends_on = [
     aws_customer_gateway.cgw,
     aws_ec2_transit_gateway.tgw
