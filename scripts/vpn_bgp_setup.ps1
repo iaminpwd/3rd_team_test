@@ -1,9 +1,9 @@
 # =================================================================
-# scripts/vpn_bgp_setup.ps1 (하드코딩 복구 및 경로 보호 포함)
+# scripts/vpn_bgp_setup.ps1 (최종: 라우팅 하이재킹 차단 및 BGP 전용 모드)
 # =================================================================
 $ErrorActionPreference = "Stop"
 
-# ⭐ [핵심 수정] 스크립트 시작 즉시, 네트워크가 가장 안정적일 때 로컬 IP 미리 확보
+# ⭐ [방어 로직] 스크립트 시작 즉시, 네트워크가 가장 안정적일 때 로컬 IP 미리 확보
 $myIp = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null }).IPv4Address.IPAddress | Select-Object -First 1
 Write-Host "BGP Router ID로 사용할 로컬 IP 확보 완료: $myIp" -ForegroundColor Green
 
@@ -14,7 +14,7 @@ Install-WindowsFeature -Name RemoteAccess, Routing, DirectAccess-VPN -IncludeMan
 # 1. RRAS 라우팅 엔진 안전 기동 및 프로비저닝 (현업 표준)
 Write-Host "1. RRAS 라우팅 엔진 안전 기동 및 초기화 중..." -ForegroundColor Cyan
 
-# 레지스트리 조작 대신 공식 Cmdlet으로 S2S VPN 및 LAN 라우팅 엔진 구성
+# 공식 Cmdlet으로 S2S VPN 및 LAN 라우팅 엔진 구성
 Install-RemoteAccess -VpnType VpnS2S -ErrorAction SilentlyContinue
 
 # 서비스 자동 실행 등록 및 기동
@@ -40,30 +40,26 @@ try { Get-BgpPeer | Remove-BgpPeer -Force -ErrorAction SilentlyContinue } catch 
 try { Remove-BgpRouter -Force -ErrorAction SilentlyContinue } catch {}
 try { Enable-RemoteAccessRoutingDomain -Custom -PassThru -ErrorAction SilentlyContinue } catch {}
 
-# 2. VPN 인터페이스 구성 (현업 표준: Narrow TS 강제 협상 및 BGP 정책 허용)
+# 2. VPN 인터페이스 구성 (⭐ 핵심: -RoutingMethod BGP 적용)
 Write-Host "2. VPN 인터페이스 구성 중..." -ForegroundColor Cyan
 $tunnels = @(
-    @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; Metric="100"; LocalIP=$BgpLocal1Ip; PeerIP=$BgpPeer1Ip },
-    @{ Name="AWS-TGW-Tunnel2"; Dest=$Tunnel2Ip; Psk=$Tunnel2Psk; Metric="150"; LocalIP=$BgpLocal2Ip; PeerIP=$BgpPeer2Ip }
+    @{ Name="AWS-TGW-Tunnel1"; Dest=$Tunnel1Ip; Psk=$Tunnel1Psk; LocalIP=$BgpLocal1Ip; PeerIP=$BgpPeer1Ip },
+    @{ Name="AWS-TGW-Tunnel2"; Dest=$Tunnel2Ip; Psk=$Tunnel2Psk; LocalIP=$BgpLocal2Ip; PeerIP=$BgpPeer2Ip }
 )
 
 foreach ($t in $tunnels) {
     Write-Host "[$($t.Name)] 생성 중..."
     
-    # AWS VPC 대역($AwsVpcCidr)과 BGP 통신 대역(169.254.0.0/16)을 배열로 동시 주입
-    # 이 배열이 IPsec TS가 되어 인터넷 하이재킹을 차단하고 BGP 패킷 드랍을 방지합니다.
-    # 변수명을 중괄호 ${}로 감싸서 콜론(:)과 완벽하게 분리합니다.
-    $awsTargetSubnets = @(
-        "${AwsVpcCidr}:$($t.Metric)",
-        "169.254.0.0/16:$($t.Metric)"
-    )
-    
-    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -IPv4Subnet $awsTargetSubnets -Protocol IKEv2 -ErrorAction Stop
+    # ⭐ -IPv4Subnet 파라미터를 완전히 삭제하고 -RoutingMethod BGP를 사용합니다.
+    # 이를 통해 윈도우는 인터넷 경로(0.0.0.0/0)를 납치하지 않고, 오직 BGP로 교환한 경로만 VPN으로 보냅니다.
+    Add-VpnS2SInterface -Name $t.Name -Destination $t.Dest -AuthenticationMethod PSKOnly -SharedSecret $t.Psk -Protocol IKEv2 -RoutingMethod BGP -ErrorAction Stop
     
     try { Connect-VpnS2SInterface -Name $t.Name -ErrorAction Stop } catch {}
     Start-Sleep -Seconds 5
 
     try { New-NetIPAddress -InterfaceAlias $t.Name -IPAddress $t.LocalIP -PrefixLength 30 -AddressFamily IPv4 -ErrorAction Stop } catch {}
+    
+    # BGP 통신을 위한 Peer 직접 경로 (Static Host Route) 추가
     try { New-NetRoute -DestinationPrefix "$($t.PeerIP)/32" -InterfaceAlias $t.Name -ErrorAction Stop } catch {}
 }
 
@@ -86,14 +82,13 @@ foreach ($p in $peers) {
     try { Start-BgpPeer -Name $p.Name -ErrorAction Stop } catch {}
 }
 
-# 4. BGP 경로 광고 (동적 변수 사용)
+# 4. BGP 경로 광고
 Write-Host "4. BGP 경로 광고 중 ($OnpremVpcCidr)..." -ForegroundColor Cyan
 try { Add-BgpCustomRoute -Network $OnpremVpcCidr -ErrorAction Stop } catch {}
 
-# 5. 인터넷 경로 보호
+# 5. 인터넷 경로 이중 보호 (선택적 방어 로직)
 Write-Host "5. 인터넷 경로 보호 중..." -ForegroundColor Cyan
 
-# 가상 어댑터 우회: 실제 활성화된 0.0.0.0/0 인터넷 경로를 가진 어댑터를 역추적
 $activeInternetRoute = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1
 
 if ($activeInternetRoute) {
@@ -103,13 +98,8 @@ if ($activeInternetRoute) {
     if ($eth -and $defaultGateway) {
         Write-Host "인터넷 어댑터 인식 완료: $($eth.Name), 게이트웨이: $defaultGateway" -ForegroundColor Green
         
-        # 1. 인터페이스 메트릭 절대 우위 설정
         Set-NetIPInterface -InterfaceAlias $eth.Name -InterfaceMetric 5
-        
-        # 2. 기존 인터넷 경로 보호 덮어쓰기
-        try { 
-            Set-NetRoute -DestinationPrefix "0.0.0.0/0" -InterfaceAlias $eth.Name -NextHop $defaultGateway -RouteMetric 5 -ErrorAction SilentlyContinue 
-        } catch {}
+        try { Set-NetRoute -DestinationPrefix "0.0.0.0/0" -InterfaceAlias $eth.Name -NextHop $defaultGateway -RouteMetric 5 -ErrorAction SilentlyContinue } catch {}
     }
 } else {
     Write-Host "활성화된 인터넷 기본 경로를 찾을 수 없습니다." -ForegroundColor Yellow
