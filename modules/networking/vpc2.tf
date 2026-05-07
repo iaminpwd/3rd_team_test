@@ -45,11 +45,6 @@ resource "aws_subnet" "workspaces_c" {
 resource "aws_route_table" "workspaces" {
   vpc_id = aws_vpc.workspaces.id
 
-  route {
-    cidr_block                = var.vpc_cidr
-    vpc_peering_connection_id = aws_vpc_peering_connection.vpc1_vpc2.id
-  }
-
   tags = {
     Name = "${local.name}-rt-workspaces"
   }

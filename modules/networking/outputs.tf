@@ -73,11 +73,6 @@ output "workspaces_subnet_c_id" {
   value       = aws_subnet.workspaces_c.id
 }
 
-output "peering_id" {
-  description = "VPC1 ↔ VPC2 피어링 ID"
-  value       = aws_vpc_peering_connection.vpc1_vpc2.id
-}
-
 output "sg_workspaces_id" {
   description = "WorkSpaces Security Group ID"
   value       = aws_security_group.workspaces.id

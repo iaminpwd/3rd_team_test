@@ -101,11 +101,6 @@ output "workspaces_subnet_c_id" {
   value       = module.networking.workspaces_subnet_c_id
 }
 
-output "peering_id" {
-  description = "VPC1 ↔ VPC2 피어링 ID"
-  value       = module.networking.peering_id
-}
-
 output "sg_workspaces_id" {
   description = "WorkSpaces Security Group ID"
   value       = module.networking.sg_workspaces_id
