@@ -38,7 +38,7 @@ resource "aws_ec2_transit_gateway" "tgw" {
 resource "aws_ec2_transit_gateway_vpc_attachment" "tgw_attach_vpc_a" {
   subnet_ids         = [aws_subnet.private_devops.id, aws_subnet.aws_subnet.id]
   transit_gateway_id = aws_ec2_transit_gateway.tgw.id
-  vpc_id             = aws_vpc.aws_vpc.id
+  vpc_id             = aws_vpc.main.id
   tags = { Name = "TGW-Attach-VPC-A" }
 }
 
